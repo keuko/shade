@@ -1,0 +1,45 @@
+Source: python-shade
+Section: python
+Priority: extra
+Maintainer: Clint Byrum <spamaps@debian.org>
+Build-Depends: debhelper (>=9),
+    dh-python,
+	python-all,
+    python-setuptools,
+    python-pbr,
+    python-sphinx,
+    python-testtools,
+    python-testrepository,
+    python-dogpile.cache,
+    python-os-client-config,
+    python-mock,
+    python-testscenarios,
+    python-novaclient,
+    python-keystoneclient,
+    python-glanceclient,
+    python-cinderclient,
+    python-neutronclient,
+    python-troveclient,
+    python-ironicclient,
+    python-swiftclient,
+    python-bunch,
+Standards-Version: 3.9.5
+Homepage: https://pypi.python.org/pypi/shade
+Vcs-Svn: svn://svn.debian.org/python-modules/packages/python-shade
+Vcs-Browser: http://svn.debian.org/wsvn/python-modules/python-shade
+X-Python-Version: >= 2.7
+
+Package: python-shade
+Architecture: all
+Depends: ${misc:Depends},${python:Depends}
+Description: Client library for operating OpenStack clouds
+ Shade is a simple Python client library for operating OpenStack
+ clouds. The key word here is simple. Clouds can do many things - but
+ there are probably only about 10 of them that most people care about
+ with any regularity. If you want to do complicated things, you should
+ probably use the lower level client libraries - or even the REST API
+ directly. However, if what you want is to be able to write an application
+ that talks to clouds no matter what choices the deployer has made then
+ shade is for you.
+ .
+ This package installs the library for Python 2.

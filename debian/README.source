@@ -1,0 +1,2 @@
+Note that because shade is heavily dependent on the client libraries,
+we cannot have a python3-shade until they are all packaged.

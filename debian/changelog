@@ -1,0 +1,5 @@
+python-shade (0.6.1-1) UNRELEASED; urgency=low
+
+  * Initial release. Closes: #784710
+
+ -- Clint Byrum <spamaps@debian.org>  Thu, 14 May 2015 15:22:27 -0700
