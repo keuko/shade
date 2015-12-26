@@ -11,7 +11,7 @@ Build-Depends: debhelper (>=9),
     python-testtools,
     python-testrepository,
     python-dogpile.cache,
-    python-os-client-config,
+    python-os-client-config (>=1.11.1),
     python-mock,
     python-testscenarios,
     python-novaclient,
@@ -23,10 +23,20 @@ Build-Depends: debhelper (>=9),
     python-ironicclient,
     python-swiftclient,
     python-bunch,
+    python-designateclient,
+    python-heatclient,
+    python-keystoneauth1,
+    python-ipaddress,
+    python-jsonpatch,
+    python-six,
+    python-munch,
+    python-requestsexceptions (>= 1.1.1),
+    python-decorator,
+    python-os-cloud-config,
 Standards-Version: 3.9.5
 Homepage: https://pypi.python.org/pypi/shade
-Vcs-Svn: svn://svn.debian.org/python-modules/packages/python-shade
-Vcs-Browser: http://svn.debian.org/wsvn/python-modules/python-shade
+Vcs-Git: git://anonscm.debian.org/python-modules/packages/python-shade.git
+Vcs-Browser: https://anonscm.debian.org/cgit/python-modules/packages/python-shade.git
 X-Python-Version: >= 2.7
 
 Package: python-shade

@@ -12,25 +12,56 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
+
+from shade import _log
+
+log = _log.setup_logging(__name__)
+
 
 class OpenStackCloudException(Exception):
+
     def __init__(self, message, extra_data=None):
         args = [message]
         if extra_data:
             args.append(extra_data)
         super(OpenStackCloudException, self).__init__(*args)
         self.extra_data = extra_data
+        self.inner_exception = sys.exc_info()
+        self.orig_message = message
+
+    def log_error(self, logger=log):
+        if self.inner_exception and self.inner_exception[1]:
+            logger.error(self.orig_message, exc_info=self.inner_exception)
 
     def __str__(self):
+        message = Exception.__str__(self)
         if self.extra_data is not None:
-            return "%s (Extra: %s)" % (
-                Exception.__str__(self), self.extra_data)
-        return Exception.__str__(self)
+            message = "%s (Extra: %s)" % (message, self.extra_data)
+        if (self.inner_exception and self.inner_exception[1]
+                and not self.orig_message.endswith(
+                    str(self.inner_exception[1]))):
+            message = "%s (Inner Exception: %s)" % (
+                message,
+                str(self.inner_exception[1]))
+        return message
 
 
 class OpenStackCloudTimeout(OpenStackCloudException):
     pass
 
 
-class OpenStackCloudUnavailableService(OpenStackCloudException):
+class OpenStackCloudUnavailableExtension(OpenStackCloudException):
+    pass
+
+
+class OpenStackCloudUnavailableFeature(OpenStackCloudException):
+    pass
+
+
+class OpenStackCloudResourceNotFound(OpenStackCloudException):
+    pass
+
+
+class OpenStackCloudURINotFound(OpenStackCloudException):
     pass

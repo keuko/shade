@@ -12,12 +12,17 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-from keystoneclient import auth as ksc_auth
-
 import mock
+import munch
+
+import glanceclient
+from heatclient import client as heat_client
+from neutronclient.common import exceptions as n_exc
 import testtools
 
+from os_client_config import cloud_config
 import shade
+from shade import _utils
 from shade import exc
 from shade import meta
 from shade.tests.unit import base
@@ -27,50 +32,10 @@ class TestShade(base.TestCase):
 
     def setUp(self):
         super(TestShade, self).setUp()
-        self.cloud = shade.openstack_cloud()
+        self.cloud = shade.openstack_cloud(validate=False)
 
     def test_openstack_cloud(self):
         self.assertIsInstance(self.cloud, shade.OpenStackCloud)
-
-    def test__filter_list_name_or_id(self):
-        el1 = dict(id=100, name='donald')
-        el2 = dict(id=200, name='pluto')
-        data = [el1, el2]
-        ret = self.cloud._filter_list(data, 'donald', None)
-        self.assertEquals([el1], ret)
-
-    def test__filter_list_filter(self):
-        el1 = dict(id=100, name='donald', other='duck')
-        el2 = dict(id=200, name='donald', other='trump')
-        data = [el1, el2]
-        ret = self.cloud._filter_list(data, 'donald', {'other': 'duck'})
-        self.assertEquals([el1], ret)
-
-    def test__filter_list_dict1(self):
-        el1 = dict(id=100, name='donald', last='duck',
-                   other=dict(category='duck'))
-        el2 = dict(id=200, name='donald', last='trump',
-                   other=dict(category='human'))
-        el3 = dict(id=300, name='donald', last='ronald mac',
-                   other=dict(category='clown'))
-        data = [el1, el2, el3]
-        ret = self.cloud._filter_list(data, 'donald',
-                                      {'other': {'category': 'clown'}})
-        self.assertEquals([el3], ret)
-
-    def test__filter_list_dict2(self):
-        el1 = dict(id=100, name='donald', last='duck',
-                   other=dict(category='duck', financial=dict(status='poor')))
-        el2 = dict(id=200, name='donald', last='trump',
-                   other=dict(category='human', financial=dict(status='rich')))
-        el3 = dict(id=300, name='donald', last='ronald mac',
-                   other=dict(category='clown', financial=dict(status='rich')))
-        data = [el1, el2, el3]
-        ret = self.cloud._filter_list(data, 'donald',
-                                      {'other': {
-                                          'financial': {'status': 'rich'}
-                                      }})
-        self.assertEquals([el2, el3], ret)
 
     @mock.patch.object(shade.OpenStackCloud, 'search_images')
     def test_get_images(self, mock_search):
@@ -106,6 +71,37 @@ class TestShade(base.TestCase):
         self.assertRaises(exc.OpenStackCloudException,
                           self.cloud.list_servers)
 
+    @mock.patch.object(cloud_config.CloudConfig, 'get_session')
+    @mock.patch.object(glanceclient, 'Client')
+    def test_glance_args(
+            self, mock_client, get_session_mock):
+        session_mock = mock.Mock()
+        session_mock.get_endpoint.return_value = 'http://example.com/v2'
+        get_session_mock.return_value = session_mock
+        self.cloud.glance_client
+        mock_client.assert_called_with(
+            '2',
+            endpoint='http://example.com',
+            region_name='', service_name=None,
+            interface='public',
+            service_type='image', session=mock.ANY,
+        )
+
+    @mock.patch.object(cloud_config.CloudConfig, 'get_session')
+    @mock.patch.object(heat_client, 'Client')
+    def test_heat_args(self, mock_client, get_session_mock):
+        session_mock = mock.Mock()
+        get_session_mock.return_value = session_mock
+        self.cloud.heat_client
+        mock_client.assert_called_with(
+            '1',
+            endpoint_type='public',
+            region_name='',
+            service_name=None,
+            service_type='orchestration',
+            session=mock.ANY,
+        )
+
     @mock.patch.object(shade.OpenStackCloud, 'search_subnets')
     def test_get_subnet(self, mock_search):
         subnet = dict(id='123', name='mickey')
@@ -133,6 +129,51 @@ class TestShade(base.TestCase):
         self.cloud.create_router(name='goofy', admin_state_up=True)
         self.assertTrue(mock_client.create_router.called)
 
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_create_router_with_enable_snat_True(self, mock_client):
+        """Do not send enable_snat when same as neutron default."""
+        self.cloud.create_router(name='goofy', admin_state_up=True,
+                                 enable_snat=True)
+        mock_client.create_router.assert_called_once_with(
+            body=dict(
+                router=dict(
+                    name='goofy',
+                    admin_state_up=True,
+                )
+            )
+        )
+
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_create_router_with_enable_snat_False(self, mock_client):
+        """Send enable_snat when it is False."""
+        self.cloud.create_router(name='goofy', admin_state_up=True,
+                                 enable_snat=False)
+        mock_client.create_router.assert_called_once_with(
+            body=dict(
+                router=dict(
+                    name='goofy',
+                    admin_state_up=True,
+                    external_gateway_info=dict(
+                        enable_snat=False
+                    )
+                )
+            )
+        )
+
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_add_router_interface(self, mock_client):
+        self.cloud.add_router_interface({'id': '123'}, subnet_id='abc')
+        mock_client.add_interface_router.assert_called_once_with(
+            router='123', body={'subnet_id': 'abc'}
+        )
+
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_remove_router_interface(self, mock_client):
+        self.cloud.remove_router_interface({'id': '123'}, subnet_id='abc')
+        mock_client.remove_interface_router.assert_called_once_with(
+            router='123', body={'subnet_id': 'abc'}
+        )
+
     @mock.patch.object(shade.OpenStackCloud, 'get_router')
     @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
     def test_update_router(self, mock_client, mock_get):
@@ -153,9 +194,8 @@ class TestShade(base.TestCase):
     @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
     def test_delete_router_not_found(self, mock_client, mock_search):
         mock_search.return_value = []
-        self.assertRaises(exc.OpenStackCloudException,
-                          self.cloud.delete_router,
-                          'goofy')
+        r = self.cloud.delete_router('goofy')
+        self.assertFalse(r)
         self.assertFalse(mock_client.delete_router.called)
 
     @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
@@ -225,9 +265,8 @@ class TestShade(base.TestCase):
     @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
     def test_delete_subnet_not_found(self, mock_client, mock_search):
         mock_search.return_value = []
-        self.assertRaises(exc.OpenStackCloudException,
-                          self.cloud.delete_subnet,
-                          'goofy')
+        r = self.cloud.delete_subnet('goofy')
+        self.assertFalse(r)
         self.assertFalse(mock_client.delete_subnet.called)
 
     @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
@@ -258,8 +297,9 @@ class TestShade(base.TestCase):
         self.cloud.update_subnet('123', subnet_name='goofy')
         self.assertTrue(mock_client.update_subnet.called)
 
-    @mock.patch.object(shade.OpenStackCloud, 'list_flavors')
-    def test_get_flavor_by_ram(self, mock_list):
+    @mock.patch.object(shade.OpenStackCloud, 'nova_client')
+    def test_get_flavor_by_ram(self, mock_nova_client):
+
         class Flavor1(object):
             id = '1'
             name = 'vanilla ice cream'
@@ -272,12 +312,12 @@ class TestShade(base.TestCase):
 
         vanilla = meta.obj_to_dict(Flavor1())
         chocolate = meta.obj_to_dict(Flavor2())
-        mock_list.return_value = [vanilla, chocolate]
+        mock_nova_client.flavors.list.return_value = [vanilla, chocolate]
         flavor = self.cloud.get_flavor_by_ram(ram=150)
         self.assertEquals(chocolate, flavor)
 
-    @mock.patch.object(shade.OpenStackCloud, 'list_flavors')
-    def test_get_flavor_by_ram_and_include(self, mock_list):
+    @mock.patch.object(shade.OpenStackCloud, 'nova_client')
+    def test_get_flavor_by_ram_and_include(self, mock_nova_client):
         class Flavor1(object):
             id = '1'
             name = 'vanilla ice cream'
@@ -296,505 +336,124 @@ class TestShade(base.TestCase):
         vanilla = meta.obj_to_dict(Flavor1())
         chocolate = meta.obj_to_dict(Flavor2())
         strawberry = meta.obj_to_dict(Flavor3())
-        mock_list.return_value = [vanilla, chocolate, strawberry]
+        mock_nova_client.flavors.list.return_value = [
+            vanilla, chocolate, strawberry]
         flavor = self.cloud.get_flavor_by_ram(ram=150, include='strawberry')
         self.assertEquals(strawberry, flavor)
 
-    @mock.patch.object(shade.OpenStackCloud, 'list_flavors')
-    def test_get_flavor_by_ram_not_found(self, mock_list):
-        mock_list.return_value = []
+    @mock.patch.object(shade.OpenStackCloud, 'nova_client')
+    def test_get_flavor_by_ram_not_found(self, mock_nova_client):
+        mock_nova_client.flavors.list.return_value = []
         self.assertRaises(shade.OpenStackCloudException,
                           self.cloud.get_flavor_by_ram,
                           ram=100)
 
-    @mock.patch.object(shade.OpenStackCloud, 'list_flavors')
-    def test_get_flavor_string_and_int(self, mock_list):
+    @mock.patch.object(shade.OpenStackCloud, 'nova_client')
+    def test_get_flavor_string_and_int(self, mock_nova_client):
         class Flavor1(object):
             id = '1'
             name = 'vanilla ice cream'
             ram = 100
 
         vanilla = meta.obj_to_dict(Flavor1())
-        mock_list.return_value = [vanilla]
+        mock_nova_client.flavors.list.return_value = [vanilla]
         flavor1 = self.cloud.get_flavor('1')
         self.assertEquals(vanilla, flavor1)
         flavor2 = self.cloud.get_flavor(1)
         self.assertEquals(vanilla, flavor2)
 
-
-class TestShadeOperator(base.TestCase):
-
-    def setUp(self):
-        super(TestShadeOperator, self).setUp()
-        self.cloud = shade.operator_cloud()
-
-    def test_operator_cloud(self):
-        self.assertIsInstance(self.cloud, shade.OperatorCloud)
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    def test_patch_machine(self, mock_client):
-        node_id = 'node01'
-        patch = []
-        patch.append({'op': 'remove', 'path': '/instance_info'})
-        self.cloud.patch_machine(node_id, patch)
-        self.assertTrue(mock_client.node.update.called)
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    @mock.patch.object(shade.OperatorCloud, 'patch_machine')
-    def test_update_machine_patch_no_action(self, mock_patch, mock_client):
-        class client_return_value:
-            uuid = '00000000-0000-0000-0000-000000000000'
-            name = 'node01'
-
-        expected_machine = dict(
-            uuid='00000000-0000-0000-0000-000000000000',
-            name='node01'
-        )
-        mock_client.node.get.return_value = client_return_value
-
-        update_dict = self.cloud.update_machine('node01')
-        self.assertIsNone(update_dict['changes'])
-        self.assertFalse(mock_patch.called)
-        self.assertDictEqual(expected_machine, update_dict['node'])
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    @mock.patch.object(shade.OperatorCloud, 'patch_machine')
-    def test_update_machine_patch_no_action_name(self, mock_patch,
-                                                 mock_client):
-        class client_return_value:
-            uuid = '00000000-0000-0000-0000-000000000000'
-            name = 'node01'
-
-        expected_machine = dict(
-            uuid='00000000-0000-0000-0000-000000000000',
-            name='node01'
-        )
-        mock_client.node.get.return_value = client_return_value
-
-        update_dict = self.cloud.update_machine('node01', name='node01')
-        self.assertIsNone(update_dict['changes'])
-        self.assertFalse(mock_patch.called)
-        self.assertDictEqual(expected_machine, update_dict['node'])
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    @mock.patch.object(shade.OperatorCloud, 'patch_machine')
-    def test_update_machine_patch_action_name(self, mock_patch,
-                                              mock_client):
-        class client_return_value:
-            uuid = '00000000-0000-0000-0000-000000000000'
-            name = 'evil'
-
-        expected_patch = [dict(op='replace', path='/name', value='good')]
-
-        mock_client.node.get.return_value = client_return_value
-
-        update_dict = self.cloud.update_machine('evil', name='good')
-        self.assertIsNotNone(update_dict['changes'])
-        self.assertEqual('/name', update_dict['changes'][0])
-        self.assertTrue(mock_patch.called)
-        mock_patch.assert_called_with(
-            '00000000-0000-0000-0000-000000000000',
-            expected_patch)
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    @mock.patch.object(shade.OperatorCloud, 'patch_machine')
-    def test_update_machine_patch_update_name(self, mock_patch,
-                                              mock_client):
-        class client_return_value:
-            uuid = '00000000-0000-0000-0000-000000000000'
-            name = 'evil'
-
-        expected_patch = [dict(op='replace', path='/name', value='good')]
-
-        mock_client.node.get.return_value = client_return_value
-
-        update_dict = self.cloud.update_machine('evil', name='good')
-        self.assertIsNotNone(update_dict['changes'])
-        self.assertEqual('/name', update_dict['changes'][0])
-        self.assertTrue(mock_patch.called)
-        mock_patch.assert_called_with(
-            '00000000-0000-0000-0000-000000000000',
-            expected_patch)
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    @mock.patch.object(shade.OperatorCloud, 'patch_machine')
-    def test_update_machine_patch_update_chassis_uuid(self, mock_patch,
-                                                      mock_client):
-        class client_return_value:
-            uuid = '00000000-0000-0000-0000-000000000000'
-            chassis_uuid = None
-
-        expected_patch = [
-            dict(
-                op='replace',
-                path='/chassis_uuid',
-                value='00000000-0000-0000-0000-000000000001'
-            )]
-
-        mock_client.node.get.return_value = client_return_value
-
-        update_dict = self.cloud.update_machine(
-            '00000000-0000-0000-0000-000000000000',
-            chassis_uuid='00000000-0000-0000-0000-000000000001')
-        self.assertIsNotNone(update_dict['changes'])
-        self.assertEqual('/chassis_uuid', update_dict['changes'][0])
-        self.assertTrue(mock_patch.called)
-        mock_patch.assert_called_with(
-            '00000000-0000-0000-0000-000000000000',
-            expected_patch)
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    @mock.patch.object(shade.OperatorCloud, 'patch_machine')
-    def test_update_machine_patch_update_driver(self, mock_patch,
-                                                mock_client):
-        class client_return_value:
-            uuid = '00000000-0000-0000-0000-000000000000'
-            driver = None
-
-        expected_patch = [
-            dict(
-                op='replace',
-                path='/driver',
-                value='fake'
-            )]
-
-        mock_client.node.get.return_value = client_return_value
-
-        update_dict = self.cloud.update_machine(
-            '00000000-0000-0000-0000-000000000000',
-            driver='fake'
-        )
-        self.assertIsNotNone(update_dict['changes'])
-        self.assertEqual('/driver', update_dict['changes'][0])
-        self.assertTrue(mock_patch.called)
-        mock_patch.assert_called_with(
-            '00000000-0000-0000-0000-000000000000',
-            expected_patch)
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    @mock.patch.object(shade.OperatorCloud, 'patch_machine')
-    def test_update_machine_patch_update_driver_info(self, mock_patch,
-                                                     mock_client):
-        class client_return_value:
-            uuid = '00000000-0000-0000-0000-000000000000'
-            driver_info = None
-
-        expected_patch = [
-            dict(
-                op='replace',
-                path='/driver_info',
-                value=dict(var='fake')
-            )]
-
-        mock_client.node.get.return_value = client_return_value
-
-        update_dict = self.cloud.update_machine(
-            '00000000-0000-0000-0000-000000000000',
-            driver_info=dict(var="fake")
-        )
-        self.assertIsNotNone(update_dict['changes'])
-        self.assertEqual('/driver_info', update_dict['changes'][0])
-        self.assertTrue(mock_patch.called)
-        mock_patch.assert_called_with(
-            '00000000-0000-0000-0000-000000000000',
-            expected_patch)
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    @mock.patch.object(shade.OperatorCloud, 'patch_machine')
-    def test_update_machine_patch_update_instance_info(self, mock_patch,
-                                                       mock_client):
-        class client_return_value:
-            uuid = '00000000-0000-0000-0000-000000000000'
-            instance_info = None
-
-        expected_patch = [
-            dict(
-                op='replace',
-                path='/instance_info',
-                value=dict(var='fake')
-            )]
-
-        mock_client.node.get.return_value = client_return_value
-
-        update_dict = self.cloud.update_machine(
-            '00000000-0000-0000-0000-000000000000',
-            instance_info=dict(var="fake")
-        )
-        self.assertIsNotNone(update_dict['changes'])
-        self.assertEqual('/instance_info', update_dict['changes'][0])
-        self.assertTrue(mock_patch.called)
-        mock_patch.assert_called_with(
-            '00000000-0000-0000-0000-000000000000',
-            expected_patch)
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    @mock.patch.object(shade.OperatorCloud, 'patch_machine')
-    def test_update_machine_patch_update_instance_uuid(self, mock_patch,
-                                                       mock_client):
-        class client_return_value:
-            uuid = '00000000-0000-0000-0000-000000000000'
-            instance_uuid = None
-
-        expected_patch = [
-            dict(
-                op='replace',
-                path='/instance_uuid',
-                value='00000000-0000-0000-0000-000000000002'
-            )]
-
-        mock_client.node.get.return_value = client_return_value
-
-        update_dict = self.cloud.update_machine(
-            '00000000-0000-0000-0000-000000000000',
-            instance_uuid='00000000-0000-0000-0000-000000000002'
-        )
-        self.assertIsNotNone(update_dict['changes'])
-        self.assertEqual('/instance_uuid', update_dict['changes'][0])
-        self.assertTrue(mock_patch.called)
-        mock_patch.assert_called_with(
-            '00000000-0000-0000-0000-000000000000',
-            expected_patch)
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    @mock.patch.object(shade.OperatorCloud, 'patch_machine')
-    def test_update_machine_patch_update_properties(self, mock_patch,
-                                                    mock_client):
-        class client_return_value:
-            uuid = '00000000-0000-0000-0000-000000000000'
-            properties = None
-
-        expected_patch = [
-            dict(
-                op='replace',
-                path='/properties',
-                value=dict(var='fake')
-            )]
-
-        mock_client.node.get.return_value = client_return_value
-
-        update_dict = self.cloud.update_machine(
-            '00000000-0000-0000-0000-000000000000',
-            properties=dict(var="fake")
-        )
-        self.assertIsNotNone(update_dict['changes'])
-        self.assertEqual('/properties', update_dict['changes'][0])
-        self.assertTrue(mock_patch.called)
-        mock_patch.assert_called_with(
-            '00000000-0000-0000-0000-000000000000',
-            expected_patch)
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    def test_register_machine(self, mock_client):
-        class fake_node:
-            uuid = "00000000-0000-0000-0000-000000000000"
-
-        expected_return_value = dict(
-            uuid="00000000-0000-0000-0000-000000000000",
-        )
-        mock_client.node.create.return_value = fake_node
-        nics = [{'mac': '00:00:00:00:00:00'}]
-        return_value = self.cloud.register_machine(nics)
-        self.assertDictEqual(expected_return_value, return_value)
-        self.assertTrue(mock_client.node.create.called)
-        self.assertTrue(mock_client.port.create.called)
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    def test_register_machine_port_create_failed(self, mock_client):
-        nics = [{'mac': '00:00:00:00:00:00'}]
-        mock_client.port.create.side_effect = (
-            exc.OpenStackCloudException("Error"))
-        self.assertRaises(exc.OpenStackCloudException,
-                          self.cloud.register_machine,
-                          nics)
-        self.assertTrue(mock_client.node.create.called)
-        self.assertTrue(mock_client.port.create.called)
-        self.assertTrue(mock_client.node.delete.called)
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    def test_unregister_machine(self, mock_client):
-        nics = [{'mac': '00:00:00:00:00:00'}]
-        uuid = "00000000-0000-0000-0000-000000000000"
-        self.cloud.unregister_machine(nics, uuid)
-        self.assertTrue(mock_client.node.delete.called)
-        self.assertTrue(mock_client.port.delete.called)
-        self.assertTrue(mock_client.port.get_by_address.called)
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    def test_set_machine_maintenace_state(self, mock_client):
-        mock_client.node.set_maintenance.return_value = None
-        node_id = 'node01'
-        reason = 'no reason'
-        self.cloud.set_machine_maintenance_state(node_id, True, reason=reason)
-        mock_client.node.set_maintenance.assert_called_with(
-            node_id='node01',
-            state='true',
-            maint_reason='no reason')
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    def test_set_machine_maintenace_state_false(self, mock_client):
-        mock_client.node.set_maintenance.return_value = None
-        node_id = 'node01'
-        self.cloud.set_machine_maintenance_state(node_id, False)
-        mock_client.node.set_maintenance.assert_called_with(
-            node_id='node01',
-            state='false')
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    def test_remove_machine_from_maintenance(self, mock_client):
-        mock_client.node.set_maintenance.return_value = None
-        node_id = 'node01'
-        self.cloud.remove_machine_from_maintenance(node_id)
-        mock_client.node.set_maintenance.assert_called_with(
-            node_id='node01',
-            state='false')
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    def test_set_machine_power_on(self, mock_client):
-        mock_client.node.set_power_state.return_value = None
-        node_id = 'node01'
-        return_value = self.cloud.set_machine_power_on(node_id)
-        self.assertEqual(None, return_value)
-        mock_client.node.set_power_state.assert_called_with(
-            node_id='node01',
-            state='on')
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    def test_set_machine_power_off(self, mock_client):
-        mock_client.node.set_power_state.return_value = None
-        node_id = 'node01'
-        return_value = self.cloud.set_machine_power_off(node_id)
-        self.assertEqual(None, return_value)
-        mock_client.node.set_power_state.assert_called_with(
-            node_id='node01',
-            state='off')
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    def test_set_machine_power_reboot(self, mock_client):
-        mock_client.node.set_power_state.return_value = None
-        node_id = 'node01'
-        return_value = self.cloud.set_machine_power_reboot(node_id)
-        self.assertEqual(None, return_value)
-        mock_client.node.set_power_state.assert_called_with(
-            node_id='node01',
-            state='reboot')
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    def test_set_machine_power_reboot_failure(self, mock_client):
-        mock_client.node.set_power_state.return_value = 'failure'
-        self.assertRaises(shade.OpenStackCloudException,
-                          self.cloud.set_machine_power_reboot,
-                          'node01')
-        mock_client.node.set_power_state.assert_called_with(
-            node_id='node01',
-            state='reboot')
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    def test_node_set_provision_state(self, mock_client):
-        mock_client.node.set_provision_state.return_value = None
-        node_id = 'node01'
-        return_value = self.cloud.node_set_provision_state(
-            node_id,
-            'active',
-            configdrive='http://127.0.0.1/file.iso')
-        self.assertEqual({}, return_value)
-        mock_client.node.set_provision_state.assert_called_with(
-            node_uuid='node01',
-            state='active',
-            configdrive='http://127.0.0.1/file.iso')
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    def test_activate_node(self, mock_client):
-        mock_client.node.set_provision_state.return_value = None
-        node_id = 'node02'
-        return_value = self.cloud.activate_node(
-            node_id,
-            configdrive='http://127.0.0.1/file.iso')
-        self.assertEqual(None, return_value)
-        mock_client.node.set_provision_state.assert_called_with(
-            node_uuid='node02',
-            state='active',
-            configdrive='http://127.0.0.1/file.iso')
-
-    @mock.patch.object(shade.OperatorCloud, 'ironic_client')
-    def test_deactivate_node(self, mock_client):
-        mock_client.node.set_provision_state.return_value = None
-        node_id = 'node03'
-        return_value = self.cloud.deactivate_node(
-            node_id)
-        self.assertEqual(None, return_value)
-        mock_client.node.set_provision_state.assert_called_with(
-            node_uuid='node03',
-            state='deleted',
-            configdrive=None)
-
-    @mock.patch.object(shade.OpenStackCloud, 'glance_client')
-    def test_get_image_name(self, glance_mock):
-
-        class Image(object):
-            id = '22'
-            name = '22 name'
-            status = 'success'
-        fake_image = Image()
-        glance_mock.images.list.return_value = [fake_image]
-        self.assertEqual('22 name', self.cloud.get_image_name('22'))
-        self.assertEqual('22 name', self.cloud.get_image_name('22 name'))
-
-    @mock.patch.object(shade.OpenStackCloud, 'glance_client')
-    def test_get_image_id(self, glance_mock):
-
-        class Image(object):
-            id = '22'
-            name = '22 name'
-            status = 'success'
-        fake_image = Image()
-        glance_mock.images.list.return_value = [fake_image]
-        self.assertEqual('22', self.cloud.get_image_id('22'))
-        self.assertEqual('22', self.cloud.get_image_id('22 name'))
-
-    def test_get_session_endpoint_provided(self):
-        self.cloud.endpoints['image'] = 'http://fake.url'
-        self.assertEqual(
-            'http://fake.url', self.cloud.get_session_endpoint('image'))
-
-    @mock.patch.object(shade.OpenStackCloud, 'keystone_session')
-    def test_get_session_endpoint_session(self, session_mock):
-        session_mock.get_endpoint.return_value = 'http://fake.url'
-        self.assertEqual(
-            'http://fake.url', self.cloud.get_session_endpoint('image'))
-
-    @mock.patch.object(shade.OpenStackCloud, 'keystone_session')
-    def test_get_session_endpoint_exception(self, session_mock):
-        class FakeException(Exception):
-            pass
-
-        def side_effect(*args, **kwargs):
-            raise FakeException("No service")
-        session_mock.get_endpoint.side_effect = side_effect
+    def test__neutron_exceptions_resource_not_found(self):
+        with mock.patch.object(
+                shade._tasks, 'NetworkList',
+                side_effect=n_exc.NotFound()):
+            self.assertRaises(exc.OpenStackCloudResourceNotFound,
+                              self.cloud.list_networks)
+
+    def test__neutron_exceptions_url_not_found(self):
+        with mock.patch.object(
+                shade._tasks, 'NetworkList',
+                side_effect=n_exc.NeutronClientException(status_code=404)):
+            self.assertRaises(exc.OpenStackCloudURINotFound,
+                              self.cloud.list_networks)
+
+    def test__neutron_exceptions_neutron_client_generic(self):
+        with mock.patch.object(
+                shade._tasks, 'NetworkList',
+                side_effect=n_exc.NeutronClientException()):
+            self.assertRaises(exc.OpenStackCloudException,
+                              self.cloud.list_networks)
+
+    def test__neutron_exceptions_generic(self):
+        with mock.patch.object(
+                shade._tasks, 'NetworkList',
+                side_effect=Exception()):
+            self.assertRaises(exc.OpenStackCloudException,
+                              self.cloud.list_networks)
+
+    @mock.patch.object(shade._tasks.ServerList, 'main')
+    def test_list_servers(self, mock_serverlist):
+        '''This test verifies that calling list_servers results in a call
+        to the ServerList task.'''
+        mock_serverlist.return_value = [
+            munch.Munch({'name': 'testserver',
+                         'id': '1'})
+        ]
+
+        r = self.cloud.list_servers()
+        self.assertEquals(1, len(r))
+        self.assertEquals('testserver', r[0]['name'])
+
+    @mock.patch.object(shade._tasks.ServerList, 'main')
+    @mock.patch('shade.meta.get_hostvars_from_server')
+    def test_list_servers_detailed(self,
+                                   mock_get_hostvars_from_server,
+                                   mock_serverlist):
+        '''This test verifies that when list_servers is called with
+        `detailed=True` that it calls `get_hostvars_from_server` for each
+        server in the list.'''
+        mock_serverlist.return_value = ['server1', 'server2']
+        mock_get_hostvars_from_server.side_effect = [
+            {'name': 'server1', 'id': '1'},
+            {'name': 'server2', 'id': '2'},
+        ]
+
+        r = self.cloud.list_servers(detailed=True)
+
+        self.assertEquals(2, len(r))
+        self.assertEquals(len(r), mock_get_hostvars_from_server.call_count)
+        self.assertEquals('server1', r[0]['name'])
+        self.assertEquals('server2', r[1]['name'])
+
+    def test_iterate_timeout_bad_wait(self):
         with testtools.ExpectedException(
                 exc.OpenStackCloudException,
-                "Error getting image endpoint: No service"):
-            self.cloud.get_session_endpoint("image")
+                "Wait value must be an int or float value."):
+            for count in _utils._iterate_timeout(
+                    1, "test_iterate_timeout_bad_wait", wait="timeishard"):
+                pass
 
-    @mock.patch.object(shade.OpenStackCloud, 'keystone_session')
-    def test_get_session_endpoint_unavailable(self, session_mock):
-        session_mock.get_endpoint.return_value = None
+    @mock.patch('time.sleep')
+    def test_iterate_timeout_str_wait(self, mock_sleep):
+        iter = _utils._iterate_timeout(
+            10, "test_iterate_timeout_str_wait", wait="1.6")
+        next(iter)
+        next(iter)
+        mock_sleep.assert_called_with(1.6)
+
+    @mock.patch('time.sleep')
+    def test_iterate_timeout_int_wait(self, mock_sleep):
+        iter = _utils._iterate_timeout(
+            10, "test_iterate_timeout_int_wait", wait=1)
+        next(iter)
+        next(iter)
+        mock_sleep.assert_called_with(1.0)
+
+    @mock.patch('time.sleep')
+    def test_iterate_timeout_timeout(self, mock_sleep):
+        message = "timeout test"
         with testtools.ExpectedException(
-                exc.OpenStackCloudUnavailableService,
-                "Cloud.*does not have a image service"):
-            self.cloud.get_session_endpoint("image")
-
-    @mock.patch.object(shade.OpenStackCloud, 'keystone_session')
-    def test_get_session_endpoint_identity(self, session_mock):
-        self.cloud.get_session_endpoint('identity')
-        session_mock.get_endpoint.assert_called_with(
-            interface=ksc_auth.AUTH_INTERFACE)
-
-    @mock.patch.object(shade.OpenStackCloud, 'keystone_session')
-    def test_has_service_no(self, session_mock):
-        session_mock.get_endpoint.return_value = None
-        self.assertFalse(self.cloud.has_service("image"))
-
-    @mock.patch.object(shade.OpenStackCloud, 'keystone_session')
-    def test_has_service_yes(self, session_mock):
-        session_mock.get_endpoint.return_value = 'http://fake.url'
-        self.assertTrue(self.cloud.has_service("image"))
+                exc.OpenStackCloudTimeout,
+                message):
+            for count in _utils._iterate_timeout(0.1, message, wait=1):
+                pass
+        mock_sleep.assert_called_with(1.0)

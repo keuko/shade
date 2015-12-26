@@ -20,30 +20,30 @@ Functional tests for `shade` image methods.
 """
 
 import tempfile
-import uuid
 
 from shade import openstack_cloud
 from shade.tests import base
 from shade.tests.functional.util import pick_image
 
 
-class TestCompute(base.TestCase):
+class TestImage(base.TestCase):
     def setUp(self):
-        super(TestCompute, self).setUp()
-        # Shell should have OS-* envvars from openrc, typically loaded by job
-        self.cloud = openstack_cloud()
+        super(TestImage, self).setUp()
+        self.cloud = openstack_cloud(cloud='devstack')
         self.image = pick_image(self.cloud.nova_client.images.list())
 
     def test_create_image(self):
         test_image = tempfile.NamedTemporaryFile(delete=False)
         test_image.write('\0' * 1024 * 1024)
         test_image.close()
-        image_name = 'test-image-%s' % uuid.uuid4()
+        image_name = self.getUniqueString('image')
         try:
             self.cloud.create_image(name=image_name,
                                     filename=test_image.name,
                                     disk_format='raw',
                                     container_format='bare',
+                                    min_disk=10,
+                                    min_ram=1024,
                                     wait=True)
         finally:
             self.cloud.delete_image(image_name, wait=True)

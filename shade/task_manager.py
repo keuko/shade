@@ -17,12 +17,16 @@
 # limitations under the License.
 
 import abc
-import logging
 import sys
 import threading
 import time
+import types
 
+import keystoneauth1.exceptions
 import six
+
+from shade import _log
+from shade import meta
 
 
 @six.add_metaclass(abc.ABCMeta)
@@ -47,15 +51,20 @@ class Task(object):
         self._exception = None
         self._traceback = None
         self._result = None
+        self._response = None
         self._finished = threading.Event()
         self.args = kw
+        self.requests = False
 
     @abc.abstractmethod
     def main(self, client):
         """ Override this method with the actual workload to be performed """
 
     def done(self, result):
-        self._result = result
+        if self.requests:
+            self._response, self._result = result
+        else:
+            self._result = result
         self._finished.set()
 
     def exception(self, e, tb):
@@ -65,20 +74,39 @@ class Task(object):
 
     def wait(self):
         self._finished.wait()
+        # TODO(mordred): We store the raw requests response if there is
+        # one now. So we should probably do an error handler to throw
+        # some exceptions if it's not 200
         if self._exception:
             six.reraise(type(self._exception), self._exception,
                         self._traceback)
-        return self._result
+
+        if type(self._result) == list:
+            return meta.obj_list_to_dict(self._result)
+        elif type(self._result) not in (bool, int, float, str, set,
+                                        types.GeneratorType):
+            return meta.obj_to_dict(self._result)
+        else:
+            return self._result
 
     def run(self, client):
         try:
-            self.done(self.main(client))
+            # Retry one time if we get a retriable connection failure
+            try:
+                self.done(self.main(client))
+            except keystoneauth1.exceptions.RetriableConnectionFailure:
+                client.log.debug(
+                    "Connection failure for {name}, retrying".format(
+                        name=type(self).__name__))
+                self.done(self.main(client))
+            except Exception:
+                raise
         except Exception as e:
             self.exception(e, sys.exc_info()[2])
 
 
 class TaskManager(object):
-    log = logging.getLogger("shade.TaskManager")
+    log = _log.setup_logging("shade.TaskManager")
 
     def __init__(self, client, name):
         self.name = name
@@ -99,5 +127,6 @@ class TaskManager(object):
         task.run(self._client)
         end = time.time()
         self.log.debug(
-            "Manager %s ran task %s in %ss" % (self.name, task, (end - start)))
+            "Manager %s ran task %s in %ss" % (
+                self.name, type(task).__name__, (end - start)))
         return task.wait()

@@ -13,6 +13,8 @@
 # limitations under the License.
 
 
+import types
+
 from shade import task_manager
 from shade.tests.unit import base
 
@@ -24,6 +26,36 @@ class TestException(Exception):
 class TestTask(task_manager.Task):
     def main(self, client):
         raise TestException("This is a test exception")
+
+
+class TestTaskGenerator(task_manager.Task):
+    def main(self, client):
+        yield 1
+
+
+class TestTaskInt(task_manager.Task):
+    def main(self, client):
+        return int(1)
+
+
+class TestTaskFloat(task_manager.Task):
+    def main(self, client):
+        return float(2.0)
+
+
+class TestTaskStr(task_manager.Task):
+    def main(self, client):
+        return "test"
+
+
+class TestTaskBool(task_manager.Task):
+    def main(self, client):
+        return True
+
+
+class TestTaskSet(task_manager.Task):
+    def main(self, client):
+        return set([1, 2])
 
 
 class TestTaskManager(base.TestCase):
@@ -40,3 +72,27 @@ class TestTaskManager(base.TestCase):
         configured interpreters (e.g. py27, p34, pypy, ...)
         """
         self.assertRaises(TestException, self.manager.submitTask, TestTask())
+
+    def test_dont_munchify_generators(self):
+        ret = self.manager.submitTask(TestTaskGenerator())
+        self.assertIsInstance(ret, types.GeneratorType)
+
+    def test_dont_munchify_int(self):
+        ret = self.manager.submitTask(TestTaskInt())
+        self.assertIsInstance(ret, int)
+
+    def test_dont_munchify_float(self):
+        ret = self.manager.submitTask(TestTaskFloat())
+        self.assertIsInstance(ret, float)
+
+    def test_dont_munchify_str(self):
+        ret = self.manager.submitTask(TestTaskStr())
+        self.assertIsInstance(ret, str)
+
+    def test_dont_munchify_bool(self):
+        ret = self.manager.submitTask(TestTaskBool())
+        self.assertIsInstance(ret, bool)
+
+    def test_dont_munchify_set(self):
+        ret = self.manager.submitTask(TestTaskSet())
+        self.assertIsInstance(ret, set)

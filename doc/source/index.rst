@@ -4,7 +4,7 @@
    contain the root `toctree` directive.
 
 Welcome to shade's documentation!
-========================================================
+=================================
 
 Contents:
 
@@ -14,6 +14,8 @@ Contents:
    installation
    usage
    contributing
+   coding
+   future
 
 .. include:: ../../README.rst
 
