@@ -37,14 +37,88 @@ class UserUpdate(task_manager.Task):
         return client.keystone_client.users.update(**self.args)
 
 
+class UserGet(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.users.get(**self.args)
+
+
+class UserAddToGroup(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.users.add_to_group(**self.args)
+
+
+class UserCheckInGroup(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.users.check_in_group(**self.args)
+
+
+class UserRemoveFromGroup(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.users.remove_from_group(**self.args)
+
+
+class ProjectList(task_manager.Task):
+    def main(self, client):
+        return client._project_manager.list()
+
+
+class ProjectCreate(task_manager.Task):
+    def main(self, client):
+        return client._project_manager.create(**self.args)
+
+
+class ProjectDelete(task_manager.Task):
+    def main(self, client):
+        return client._project_manager.delete(**self.args)
+
+
+class ProjectUpdate(task_manager.Task):
+    def main(self, client):
+        return client._project_manager.update(**self.args)
+
+
 class FlavorList(task_manager.Task):
     def main(self, client):
-        return client.nova_client.flavors.list()
+        return client.nova_client.flavors.list(**self.args)
+
+
+class FlavorCreate(task_manager.Task):
+    def main(self, client):
+        return client.nova_client.flavors.create(**self.args)
+
+
+class FlavorDelete(task_manager.Task):
+    def main(self, client):
+        return client.nova_client.flavors.delete(**self.args)
+
+
+class FlavorGet(task_manager.Task):
+    def main(self, client):
+        return client.nova_client.flavors.get(**self.args)
+
+
+class FlavorAddAccess(task_manager.Task):
+    def main(self, client):
+        return client.nova_client.flavor_access.add_tenant_access(
+            **self.args
+        )
+
+
+class FlavorRemoveAccess(task_manager.Task):
+    def main(self, client):
+        return client.nova_client.flavor_access.remove_tenant_access(
+            **self.args
+        )
 
 
 class ServerList(task_manager.Task):
     def main(self, client):
         return client.nova_client.servers.list(**self.args)
+
+
+class ServerListSecurityGroups(task_manager.Task):
+    def main(self, client):
+        return client.nova_client.servers.list_security_group(**self.args)
 
 
 class ServerGet(task_manager.Task):
@@ -67,6 +141,11 @@ class ServerRebuild(task_manager.Task):
         return client.nova_client.servers.rebuild(**self.args)
 
 
+class HypervisorList(task_manager.Task):
+    def main(self, client):
+        return client.nova_client.hypervisors.list(**self.args)
+
+
 class KeypairList(task_manager.Task):
     def main(self, client):
         return client.nova_client.keypairs.list()
@@ -84,6 +163,7 @@ class KeypairDelete(task_manager.Task):
 
 class NovaUrlGet(task_manager.Task):
     def main(self, client):
+        self.requests = True
         return client.nova_client.client.get(**self.args)
 
 
@@ -119,12 +199,22 @@ class RouterUpdate(task_manager.Task):
 
 class RouterDelete(task_manager.Task):
     def main(self, client):
-        client.neutron_client.delete_router(**self.args)
+        return client.neutron_client.delete_router(**self.args)
+
+
+class RouterAddInterface(task_manager.Task):
+    def main(self, client):
+        return client.neutron_client.add_interface_router(**self.args)
+
+
+class RouterRemoveInterface(task_manager.Task):
+    def main(self, client):
+        client.neutron_client.remove_interface_router(**self.args)
 
 
 class GlanceImageList(task_manager.Task):
     def main(self, client):
-        return client.glance_client.images.list()
+        return [image for image in self.args['image_gen']]
 
 
 class NovaImageList(task_manager.Task):
@@ -162,6 +252,11 @@ class ImageUpdate(task_manager.Task):
         client.glance_client.images.update(**self.args)
 
 
+class ImageUpload(task_manager.Task):
+    def main(self, client):
+        client.glance_client.images.upload(**self.args)
+
+
 class VolumeCreate(task_manager.Task):
     def main(self, client):
         return client.cinder_client.volumes.create(**self.args)
@@ -184,33 +279,137 @@ class VolumeDetach(task_manager.Task):
 
 class VolumeAttach(task_manager.Task):
     def main(self, client):
-        client.nova_client.volumes.create_server_volume(**self.args)
+        return client.nova_client.volumes.create_server_volume(**self.args)
 
 
-class SecurityGroupList(task_manager.Task):
+class VolumeSnapshotCreate(task_manager.Task):
+    def main(self, client):
+        return client.cinder_client.volume_snapshots.create(**self.args)
+
+
+class VolumeSnapshotGet(task_manager.Task):
+    def main(self, client):
+        return client.cinder_client.volume_snapshots.get(**self.args)
+
+
+class VolumeSnapshotList(task_manager.Task):
+    def main(self, client):
+        return client.cinder_client.volume_snapshots.list(**self.args)
+
+
+class VolumeSnapshotDelete(task_manager.Task):
+    def main(self, client):
+        return client.cinder_client.volume_snapshots.delete(**self.args)
+
+
+class NeutronSecurityGroupList(task_manager.Task):
+    def main(self, client):
+        return client.neutron_client.list_security_groups()
+
+
+class NeutronSecurityGroupCreate(task_manager.Task):
+    def main(self, client):
+        return client.neutron_client.create_security_group(**self.args)
+
+
+class NeutronSecurityGroupDelete(task_manager.Task):
+    def main(self, client):
+        return client.neutron_client.delete_security_group(**self.args)
+
+
+class NeutronSecurityGroupUpdate(task_manager.Task):
+    def main(self, client):
+        return client.neutron_client.update_security_group(**self.args)
+
+
+class NeutronSecurityGroupRuleCreate(task_manager.Task):
+    def main(self, client):
+        return client.neutron_client.create_security_group_rule(**self.args)
+
+
+class NeutronSecurityGroupRuleDelete(task_manager.Task):
+    def main(self, client):
+        return client.neutron_client.delete_security_group_rule(**self.args)
+
+
+class NovaSecurityGroupList(task_manager.Task):
     def main(self, client):
         return client.nova_client.security_groups.list()
 
 
-# TODO: Do this with neutron instead of nova if possible
-class FloatingIPList(task_manager.Task):
+class NovaSecurityGroupCreate(task_manager.Task):
+    def main(self, client):
+        return client.nova_client.security_groups.create(**self.args)
+
+
+class NovaSecurityGroupDelete(task_manager.Task):
+    def main(self, client):
+        return client.nova_client.security_groups.delete(**self.args)
+
+
+class NovaSecurityGroupUpdate(task_manager.Task):
+    def main(self, client):
+        return client.nova_client.security_groups.update(**self.args)
+
+
+class NovaSecurityGroupRuleCreate(task_manager.Task):
+    def main(self, client):
+        return client.nova_client.security_group_rules.create(**self.args)
+
+
+class NovaSecurityGroupRuleDelete(task_manager.Task):
+    def main(self, client):
+        return client.nova_client.security_group_rules.delete(**self.args)
+
+
+class NeutronFloatingIPList(task_manager.Task):
+    def main(self, client):
+        return client.neutron_client.list_floatingips(**self.args)
+
+
+class NovaFloatingIPList(task_manager.Task):
     def main(self, client):
         return client.nova_client.floating_ips.list()
 
 
-class FloatingIPCreate(task_manager.Task):
+class NeutronFloatingIPCreate(task_manager.Task):
+    def main(self, client):
+        return client.neutron_client.create_floatingip(**self.args)
+
+
+class NovaFloatingIPCreate(task_manager.Task):
     def main(self, client):
         return client.nova_client.floating_ips.create(**self.args)
 
 
-class FloatingIPDelete(task_manager.Task):
+class NeutronFloatingIPDelete(task_manager.Task):
+    def main(self, client):
+        return client.neutron_client.delete_floatingip(**self.args)
+
+
+class NovaFloatingIPDelete(task_manager.Task):
     def main(self, client):
         return client.nova_client.floating_ips.delete(**self.args)
 
 
-class FloatingIPAttach(task_manager.Task):
+class NovaFloatingIPAttach(task_manager.Task):
     def main(self, client):
         return client.nova_client.servers.add_floating_ip(**self.args)
+
+
+class NovaFloatingIPDetach(task_manager.Task):
+    def main(self, client):
+        return client.nova_client.servers.remove_floating_ip(**self.args)
+
+
+class NeutronFloatingIPUpdate(task_manager.Task):
+    def main(self, client):
+        return client.neutron_client.update_floatingip(**self.args)
+
+
+class FloatingIPPoolList(task_manager.Task):
+    def main(self, client):
+        return client.nova_client.floating_ip_pools.list()
 
 
 class ContainerGet(task_manager.Task):
@@ -233,14 +432,34 @@ class ContainerUpdate(task_manager.Task):
         client.swift_client.post_container(**self.args)
 
 
+class ContainerList(task_manager.Task):
+    def main(self, client):
+        return client.swift_client.get_account(**self.args)[1]
+
+
+class ObjectCapabilities(task_manager.Task):
+    def main(self, client):
+        return client.swift_client.get_capabilities(**self.args)
+
+
+class ObjectDelete(task_manager.Task):
+    def main(self, client):
+        return client.swift_client.delete_object(**self.args)
+
+
 class ObjectCreate(task_manager.Task):
     def main(self, client):
-        client.swift_client.put_object(**self.args)
+        return client.swift_service.upload(**self.args)
 
 
 class ObjectUpdate(task_manager.Task):
     def main(self, client):
         client.swift_client.post_object(**self.args)
+
+
+class ObjectList(task_manager.Task):
+    def main(self, client):
+        return client.swift_client.get_container(**self.args)[1]
 
 
 class ObjectMetadata(task_manager.Task):
@@ -268,6 +487,26 @@ class SubnetUpdate(task_manager.Task):
         return client.neutron_client.update_subnet(**self.args)
 
 
+class PortList(task_manager.Task):
+    def main(self, client):
+        return client.neutron_client.list_ports(**self.args)
+
+
+class PortCreate(task_manager.Task):
+    def main(self, client):
+        return client.neutron_client.create_port(**self.args)
+
+
+class PortUpdate(task_manager.Task):
+    def main(self, client):
+        return client.neutron_client.update_port(**self.args)
+
+
+class PortDelete(task_manager.Task):
+    def main(self, client):
+        return client.neutron_client.delete_port(**self.args)
+
+
 class MachineCreate(task_manager.Task):
     def main(self, client):
         return client.ironic_client.node.create(**self.args)
@@ -283,6 +522,16 @@ class MachinePatch(task_manager.Task):
         return client.ironic_client.node.update(**self.args)
 
 
+class MachinePortGet(task_manager.Task):
+    def main(self, client):
+        return client.ironic_client.port.get(**self.args)
+
+
+class MachinePortGetByAddress(task_manager.Task):
+    def main(self, client):
+        return client.ironic_client.port.get_by_address(**self.args)
+
+
 class MachinePortCreate(task_manager.Task):
     def main(self, client):
         return client.ironic_client.port.create(**self.args)
@@ -291,6 +540,36 @@ class MachinePortCreate(task_manager.Task):
 class MachinePortDelete(task_manager.Task):
     def main(self, client):
         return client.ironic_client.port.delete(**self.args)
+
+
+class MachinePortList(task_manager.Task):
+    def main(self, client):
+        return client.ironic_client.port.list()
+
+
+class MachineNodeGet(task_manager.Task):
+    def main(self, client):
+        return client.ironic_client.node.get(**self.args)
+
+
+class MachineNodeList(task_manager.Task):
+    def main(self, client):
+        return client.ironic_client.node.list(**self.args)
+
+
+class MachineNodePortList(task_manager.Task):
+    def main(self, client):
+        return client.ironic_client.node.list_ports(**self.args)
+
+
+class MachineNodeUpdate(task_manager.Task):
+    def main(self, client):
+        return client.ironic_client.node.update(**self.args)
+
+
+class MachineNodeValidate(task_manager.Task):
+    def main(self, client):
+        return client.ironic_client.node.validate(**self.args)
 
 
 class MachineSetMaintenance(task_manager.Task):
@@ -306,3 +585,108 @@ class MachineSetPower(task_manager.Task):
 class MachineSetProvision(task_manager.Task):
     def main(self, client):
         return client.ironic_client.node.set_provision_state(**self.args)
+
+
+class ServiceCreate(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.services.create(**self.args)
+
+
+class ServiceList(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.services.list()
+
+
+class ServiceDelete(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.services.delete(**self.args)
+
+
+class EndpointCreate(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.endpoints.create(**self.args)
+
+
+class EndpointList(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.endpoints.list()
+
+
+class EndpointDelete(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.endpoints.delete(**self.args)
+
+
+class DomainCreate(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.domains.create(**self.args)
+
+
+class DomainList(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.domains.list(**self.args)
+
+
+class DomainGet(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.domains.get(**self.args)
+
+
+class DomainUpdate(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.domains.update(**self.args)
+
+
+class DomainDelete(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.domains.delete(**self.args)
+
+
+class GroupList(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.groups.list()
+
+
+class GroupCreate(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.groups.create(**self.args)
+
+
+class GroupDelete(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.groups.delete(**self.args)
+
+
+class GroupUpdate(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.groups.update(**self.args)
+
+
+class RoleList(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.roles.list()
+
+
+class RoleCreate(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.roles.create(**self.args)
+
+
+class RoleDelete(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.roles.delete(**self.args)
+
+
+class StackList(task_manager.Task):
+    def main(self, client):
+        return client.heat_client.stacks.list()
+
+
+class StackCreate(task_manager.Task):
+    def main(self, client):
+        return client.heat_client.stacks.create(**self.args)
+
+
+class StackDelete(task_manager.Task):
+    def main(self, client):
+        return client.heat_client.stacks.delete(**self.args)

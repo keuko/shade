@@ -1,5 +1,5 @@
-shade
-=====
+Introduction
+============
 
 shade is a simple client library for operating OpenStack clouds. The
 key word here is *simple*. Clouds can do many many many things - but there are
@@ -17,33 +17,29 @@ library, and adding logic and features that the OpenStack Infra team had
 developed to run client applications at scale, it turned out that we'd written
 nine-tenths of what we'd need to have a standalone library.
 
-example
--------
+Example
+=======
 
 Sometimes an example is nice.
 ::
 
-  from shade import *
-  import time
+  import shade
+
+  # Initialize and turn on debug loggin
+  shade.simple_logging(debug=True)
 
   # Initialize cloud
   # Cloud configs are read with os-client-config
-  cloud = openstack_cloud('mordred')
+  cloud = shade.openstack_cloud(cloud='mordred')
 
-  # OpenStackCloud object has an interface exposing OpenStack services methods
-  print cloud.list_servers()
-  s = cloud.list_servers()[0]
+  # Upload an image to the cloud
+  image = cloud.create_image(
+      'ubuntu-trusty', filename='ubuntu-trusty.qcow2', wait=True)
 
-  # But you can also access the underlying python-*client objects
-  cinder = cloud.cinder_client
-  volumes = cinder.volumes.list()
-  volume_id = [v for v in volumes if v['status'] == 'available'][0]['id']
-  nova = cloud.nova_client
-  print nova.volumes.create_server_volume(s['id'], volume_id, None)
-  attachments = []
-  print volume_id
-  while not attachments:
-      print "Waiting for attach to finish"
-      time.sleep(1)
-      attachments = cinder.volumes.get(volume_id).attachments
-  print attachments
+  # Find a flavor with at least 512M of RAM
+  flavor = cloud.get_flavor_by_ram(512)
+
+  # Boot a server, wait for it to boot, and then do whatever is needed
+  # to get a public ip for it.
+  cloud.create_server(
+      'my-server', image=image, flavor=flavor, wait=True, auto_ip=True)
