@@ -1,0 +1,14 @@
+python-shade (1.3.0-1) unstable; urgency=medium
+
+  * New Upstream release.
+  * Fixed SCM to point at git (Closes: #804548)
+  * Respect DEB_BUILD_OPTOINS (Closes: #804550)
+  * Add new build deps to pass test suite in new release.
+
+ -- Clint Byrum <spamaps@debian.org>  Sat, 26 Dec 2015 07:48:24 -0800
+
+python-shade (0.6.1-1) unstable; urgency=low
+
+  * Initial release. Closes: #784710
+
+ -- Clint Byrum <spamaps@debian.org>  Thu, 14 May 2015 15:22:27 -0700
