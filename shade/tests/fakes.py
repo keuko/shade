@@ -72,7 +72,11 @@ class FakeServer(object):
         self.name = name
         self.status = status
         self.addresses = addresses
+        if not flavor:
+            flavor = {}
         self.flavor = flavor
+        if not image:
+            image = {}
         self.image = image
         self.accessIPv4 = accessIPv4
         self.accessIPv6 = accessIPv6
@@ -193,3 +197,17 @@ class FakeGroup(object):
         self.name = name
         self.description = description
         self.domain = domain
+
+
+class FakeHypervisor(object):
+    def __init__(self, id, hostname):
+        self.id = id
+        self.hypervisor_hostname = hostname
+
+
+class FakeStack(object):
+    def __init__(self, id, name, description=None, status='CREATE_COMPLETE'):
+        self.id = id
+        self.stack_name = name
+        self.stack_description = description
+        self.stack_status = status

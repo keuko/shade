@@ -1,6 +1,44 @@
 CHANGES
 =======
 
+1.4.0
+-----
+
+* correct rpmlint errors
+* Add tests for stack search API
+* Fix filtering in search_stacks()
+* Bug fix: Cinder v2 returns bools now
+* Normalize server objects
+* Make server variable expansion optional
+* Have inventory use os-client-config extra_config
+* Fix unittest stack status
+* Fix shade tests with OCC 1.13.0
+* No Mutable Defaults
+* Add option to enable HTTP tracing
+* Add support for querying role assignments
+* Add inventory unit tests
+* Fix server deletes when cinder isn't available
+* Pedantic spelling correction
+* Bug fix: create_stack() fails when waiting
+* Stack API improvements
+* Bug fix: delete_object() returns True/False
+* Add wait support for ironic node [de]activate
+* Improve test coverage: container/object list API
+* Make a new swift client prior to each image upload
+* Improve test coverage: volume attach/detach API
+* Bug fix: Allow name update for domains
+* Improve test coverage: network delete API
+* Bug fix: Fix pass thru filtering in list_networks
+* Consider 'in-use' a non-pending volume for caching
+* Improve test coverage: private extension API
+* Improve test coverage: hypervisor list
+* Use reno for release notes
+* Improve test coverage: list_router_interfaces API
+* Change the client imports to stop shadowing
+* Use non-versioned cinderclient constructor
+* Improve test coverage: server secgroup API
+* Improve test coverage: container API
+
 1.3.0
 -----
 

@@ -19,9 +19,17 @@ doc/source/contributing.rst
 doc/source/future.rst
 doc/source/index.rst
 doc/source/installation.rst
+doc/source/releasenotes.rst
 doc/source/usage.rst
 extras/delete-network.sh
 extras/run-ansible-tests.sh
+releasenotes/notes/cache-in-use-volumes-c7fa8bb378106fe3.yaml
+releasenotes/notes/cinderv2-norm-fix-037189c60b43089f.yaml
+releasenotes/notes/create-stack-fix-12dbb59a48ac7442.yaml
+releasenotes/notes/delete-obj-return-a3ecf0415b7a2989.yaml
+releasenotes/notes/fix-list-networks-a592725df64c306e.yaml
+releasenotes/notes/fix-update-domain-af47b066ac52eb7f.yaml
+releasenotes/notes/started-using-reno-242e2b0cd27f9480.yaml
 shade/__init__.py
 shade/_log.py
 shade/_tasks.py
@@ -107,6 +115,7 @@ shade/tests/unit/test_floating_ip_nova.py
 shade/tests/unit/test_floating_ip_pool.py
 shade/tests/unit/test_groups.py
 shade/tests/unit/test_identity_roles.py
+shade/tests/unit/test_inventory.py
 shade/tests/unit/test_keypair.py
 shade/tests/unit/test_meta.py
 shade/tests/unit/test_network.py
@@ -119,5 +128,7 @@ shade/tests/unit/test_security_groups.py
 shade/tests/unit/test_services.py
 shade/tests/unit/test_shade.py
 shade/tests/unit/test_shade_operator.py
+shade/tests/unit/test_stack.py
 shade/tests/unit/test_task_manager.py
 shade/tests/unit/test_users.py
+shade/tests/unit/test_volume.py

@@ -1,6 +1,6 @@
 Metadata-Version: 1.1
 Name: shade
-Version: 1.3.0
+Version: 1.4.0
 Summary: Client library for operating OpenStack clouds
 Home-page: http://docs.openstack.org/infra/shade/
 Author: OpenStack Infrastructure Team
@@ -33,7 +33,7 @@ Description: Introduction
         
           import shade
         
-          # Initialize and turn on debug loggin
+          # Initialize and turn on debug logging
           shade.simple_logging(debug=True)
         
           # Initialize cloud

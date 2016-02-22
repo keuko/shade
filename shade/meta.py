@@ -224,44 +224,47 @@ def get_groups_from_server(cloud, server, server_vars):
 
 
 def expand_server_vars(cloud, server):
-    """Add clean up the server dict with information that is essential."""
-    server_vars = server
-    server_vars.pop('links', None)
+    """Backwards compatibility function."""
+    return add_server_interfaces(cloud, server)
 
+
+def add_server_interfaces(cloud, server):
+    """Add network interface information to server.
+
+    Query the cloud as necessary to add information to the server record
+    about the network information needed to interface with the server.
+
+    Ensures that public_v4, public_v6, private_v4, private_v6, interface_ip,
+                 accessIPv4 and accessIPv6 are always set.
+    """
     # First, add an IP address. Set it to '' rather than None if it does
     # not exist to remain consistent with the pre-existing missing values
-    server_vars['public_v4'] = get_server_external_ipv4(cloud, server) or ''
-    server_vars['public_v6'] = get_server_external_ipv6(server) or ''
-    server_vars['private_v4'] = get_server_private_ip(server, cloud) or ''
+    server['public_v4'] = get_server_external_ipv4(cloud, server) or ''
+    server['public_v6'] = get_server_external_ipv6(server) or ''
+    server['private_v4'] = get_server_private_ip(server, cloud) or ''
     interface_ip = None
-    if cloud.private and server_vars['private_v4']:
-        interface_ip = server_vars['private_v4']
+    if cloud.private and server['private_v4']:
+        interface_ip = server['private_v4']
     else:
-        if (server_vars['public_v6'] and cloud._local_ipv6
+        if (server['public_v6'] and cloud._local_ipv6
             and not cloud.force_ipv4):
-            interface_ip = server_vars['public_v6']
+            interface_ip = server['public_v6']
         else:
-            interface_ip = server_vars['public_v4']
+            interface_ip = server['public_v4']
     if interface_ip:
-        server_vars['interface_ip'] = interface_ip
+        server['interface_ip'] = interface_ip
 
     # Some clouds do not set these, but they're a regular part of the Nova
     # server record. Since we know them, go ahead and set them. In the case
     # where they were set previous, we use the values, so this will not break
     # clouds that provide the information
-    if cloud.private and server_vars['private_v4']:
-        server_vars['accessIPv4'] = server_vars['private_v4']
+    if cloud.private and server['private_v4']:
+        server['accessIPv4'] = server['private_v4']
     else:
-        server_vars['accessIPv4'] = server_vars['public_v4']
-    server_vars['accessIPv6'] = server_vars['public_v6']
+        server['accessIPv4'] = server['public_v4']
+    server['accessIPv6'] = server['public_v6']
 
-    server_vars['region'] = cloud.region_name
-    server_vars['cloud'] = cloud.name
-
-    az = server_vars.get('OS-EXT-AZ:availability_zone', None)
-    if az:
-        server_vars['az'] = az
-    return server_vars
+    return server
 
 
 def expand_server_security_groups(cloud, server):
@@ -273,14 +276,19 @@ def expand_server_security_groups(cloud, server):
 
 
 def get_hostvars_from_server(cloud, server, mounts=None):
-    """Expand additional server information useful for ansible inventory."""
-    server_vars = expand_server_vars(cloud, server)
+    """Expand additional server information useful for ansible inventory.
+
+    Variables in this function may make additional cloud queries to flesh out
+    possibly interesting info, making it more expensive to call than
+    expand_server_vars if caching is not set up. If caching is set up,
+    the extra cost should be minimal.
+    """
+    server_vars = add_server_interfaces(cloud, server)
 
     flavor_id = server['flavor']['id']
     flavor_name = cloud.get_flavor_name(flavor_id)
     if flavor_name:
         server_vars['flavor']['name'] = flavor_name
-    server_vars['flavor'].pop('links', None)
 
     expand_server_security_groups(cloud, server)
 
@@ -294,7 +302,6 @@ def get_hostvars_from_server(cloud, server, mounts=None):
         image_name = cloud.get_image_name(image_id)
         if image_name:
             server_vars['image']['name'] = image_name
-    server_vars['image'].pop('links', None)
 
     volumes = []
     if cloud.has_service('volume'):

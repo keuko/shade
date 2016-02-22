@@ -12,18 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
+
 import os_client_config
 
 import shade
 from shade import _utils
+from shade import meta
 
 
 class OpenStackInventory(object):
 
+    # Put this here so the capability can be detected with hasattr on the class
+    extra_config = None
+
     def __init__(
-            self, config_files=[], refresh=False, private=False):
+            self, config_files=None, refresh=False, private=False,
+            config_key=None, config_defaults=None):
+        if config_files is None:
+            config_files = []
         config = os_client_config.config.OpenStackConfig(
             config_files=os_client_config.config.CONFIG_FILES + config_files)
+        self.extra_config = config.get_extra_config(
+            config_key, config_defaults)
 
         self.clouds = [
             shade.OpenStackCloud(cloud_config=cloud_config)
@@ -39,7 +50,7 @@ class OpenStackInventory(object):
             for cloud in self.clouds:
                 cloud._cache.invalidate()
 
-    def list_hosts(self):
+    def list_hosts(self, expand=True):
         hostvars = []
 
         for cloud in self.clouds:
@@ -47,14 +58,21 @@ class OpenStackInventory(object):
             # Cycle on servers
             for server in cloud.list_servers():
 
-                meta = cloud.get_openstack_vars(server)
-                hostvars.append(meta)
+                if expand:
+                    server_vars = cloud.get_openstack_vars(server)
+                else:
+                    server_vars = meta.add_server_interfaces(cloud, server)
+                hostvars.append(server_vars)
 
         return hostvars
 
-    def search_hosts(self, name_or_id=None, filters=None):
-        hosts = self.list_hosts()
+    def search_hosts(self, name_or_id=None, filters=None, expand=True):
+        hosts = self.list_hosts(expand=expand)
         return _utils._filter_list(hosts, name_or_id, filters)
 
-    def get_host(self, name_or_id, filters=None):
-        return _utils._get_entity(self.search_hosts, name_or_id, filters)
+    def get_host(self, name_or_id, filters=None, expand=True):
+        if expand:
+            func = self.search_hosts
+        else:
+            func = functools.partial(self.search_hosts, expand=False)
+        return _utils._get_entity(func, name_or_id, filters)

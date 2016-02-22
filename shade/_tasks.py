@@ -169,7 +169,7 @@ class NovaUrlGet(task_manager.Task):
 
 class NetworkList(task_manager.Task):
     def main(self, client):
-        return client.neutron_client.list_networks()
+        return client.neutron_client.list_networks(**self.args)
 
 
 class NetworkCreate(task_manager.Task):
@@ -675,6 +675,11 @@ class RoleCreate(task_manager.Task):
 class RoleDelete(task_manager.Task):
     def main(self, client):
         return client.keystone_client.roles.delete(**self.args)
+
+
+class RoleAssignmentList(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.role_assignments.list(**self.args)
 
 
 class StackList(task_manager.Task):

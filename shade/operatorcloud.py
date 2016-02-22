@@ -573,10 +573,14 @@ class OperatorCloud(openstackcloud.OpenStackCloud):
                         "Timeout waiting for node transition to "
                         "target state of '%s'" % state):
                     machine = self.get_machine(name_or_id)
+                    # NOTE(TheJulia): This performs matching if the requested
+                    # end state matches the state the node has reached.
                     if state in machine['provision_state']:
                         break
+                    # NOTE(TheJulia): This performs matching for cases where
+                    # the reqeusted state action ends in available state.
                     if ("available" in machine['provision_state'] and
-                            "provide" in state):
+                            state in ["provide", "deleted"]):
                         break
             else:
                 machine = self.get_machine(name_or_id)
@@ -720,11 +724,15 @@ class OperatorCloud(openstackcloud.OpenStackCloud):
         """
         self._set_machine_power_state(name_or_id, 'reboot')
 
-    def activate_node(self, uuid, configdrive=None):
-        self.node_set_provision_state(uuid, 'active', configdrive)
+    def activate_node(self, uuid, configdrive=None,
+                      wait=False, timeout=1200):
+        self.node_set_provision_state(
+            uuid, 'active', configdrive, wait=wait, timeout=timeout)
 
-    def deactivate_node(self, uuid):
-        self.node_set_provision_state(uuid, 'deleted')
+    def deactivate_node(self, uuid, wait=False,
+                        timeout=1200):
+        self.node_set_provision_state(
+            uuid, 'deleted', wait=wait, timeout=timeout)
 
     def set_node_instance_info(self, uuid, patch):
         with _utils.shade_exceptions():
@@ -1030,7 +1038,8 @@ class OperatorCloud(openstackcloud.OpenStackCloud):
         with _utils.shade_exceptions(
                 "Error in updating domain {domain}".format(domain=domain_id)):
             domain = self.manager.submitTask(_tasks.DomainUpdate(
-                domain=domain_id, description=description, enabled=enabled))
+                domain=domain_id, name=name, description=description,
+                enabled=enabled))
         return _utils.normalize_domains([domain])[0]
 
     def delete_domain(self, domain_id):
@@ -1276,6 +1285,43 @@ class OperatorCloud(openstackcloud.OpenStackCloud):
             the openstack API call.
         """
         return _utils._get_entity(self.search_roles, name_or_id, filters)
+
+    def list_role_assignments(self, filters=None):
+        """List Keystone role assignments
+
+        :param dict filters: Dict of filter conditions. Acceptable keys are::
+
+            - 'user' (string) - User ID to be used as query filter.
+            - 'group' (string) - Group ID to be used as query filter.
+            - 'project' (string) - Project ID to be used as query filter.
+            - 'domain' (string) - Domain ID to be used as query filter.
+            - 'role' (string) - Role ID to be used as query filter.
+            - 'os_inherit_extension_inherited_to' (string) - Return inherited
+              role assignments for either 'projects' or 'domains'
+            - 'effective' (boolean) - Return effective role assignments.
+            - 'include_subtree' (boolean) - Include subtree
+
+            'user' and 'group' are mutually exclusive, as are 'domain' and
+            'project'.
+
+        :returns: a list of dicts containing the role assignment description.
+            Contains the following attributes::
+
+                - id: <role id>
+                - user|group: <user or group id>
+                - project|domain: <project or domain id>
+
+        :raises: ``OpenStackCloudException``: if something goes wrong during
+            the openstack API call.
+        """
+        if not filters:
+            filters = {}
+
+        with _utils.shade_exceptions("Failed to list role assignments"):
+            assignments = self.manager.submitTask(
+                _tasks.RoleAssignmentList(**filters)
+            )
+        return _utils.normalize_role_assignments(assignments)
 
     def create_flavor(self, name, ram, vcpus, disk, flavorid="auto",
                       ephemeral=0, swap=0, rxtx_factor=1.0, is_public=True):
