@@ -15,6 +15,7 @@
 import contextlib
 import inspect
 import netifaces
+import six
 import time
 
 from decorator import decorator
@@ -139,6 +140,36 @@ def _get_entity(func, name_or_id, filters):
         raise exc.OpenStackCloudException(
             "Multiple matches found for %s" % name_or_id)
     return entities[0]
+
+
+def normalize_servers(servers, cloud_name, region_name):
+    # Here instead of _utils because we need access to region and cloud
+    # name from the cloud object
+    ret = []
+    for server in servers:
+        ret.append(normalize_server(server, cloud_name, region_name))
+    return ret
+
+
+def normalize_server(server, cloud_name, region_name):
+    server.pop('links', None)
+    server['flavor'].pop('links', None)
+    # OpenStack can return image as a string when you've booted
+    # from volume
+    if str(server['image']) != server['image']:
+        server['image'].pop('links', None)
+
+    server['region'] = region_name
+    server['cloud'] = cloud_name
+
+    az = server.get('OS-EXT-AZ:availability_zone', None)
+    if az:
+        server['az'] = az
+
+    # Ensure volumes is always in the server dict, even if empty
+    server['volumes'] = []
+
+    return server
 
 
 def normalize_keystone_services(services):
@@ -327,13 +358,16 @@ def normalize_volumes(volumes):
         new_vol['display_name'] = name
         new_vol['description'] = description
         new_vol['display_description'] = description
-        # For some reason, cinder uses strings for bools for these fields
+        # For some reason, cinder v1 uses strings for bools for these fields.
+        # Cinder v2 uses booleans.
         for field in ('bootable', 'multiattach'):
-            if field in new_vol and new_vol[field] is not None:
-                if new_vol[field].lower() == 'true':
-                    new_vol[field] = True
-                elif new_vol[field].lower() == 'false':
-                    new_vol[field] = False
+            if field in new_vol and isinstance(new_vol[field],
+                                               six.string_types):
+                if new_vol[field] is not None:
+                    if new_vol[field].lower() == 'true':
+                        new_vol[field] = True
+                    elif new_vol[field].lower() == 'false':
+                        new_vol[field] = False
         ret.append(new_vol)
     return meta.obj_list_to_dict(ret)
 
@@ -361,6 +395,56 @@ def normalize_groups(domains):
         ) for domain in domains
     ]
     return meta.obj_list_to_dict(ret)
+
+
+def normalize_role_assignments(assignments):
+    """Put role_assignments into a form that works with search/get interface.
+
+    Role assignments have the structure::
+
+        [
+            {
+                "role": {
+                    "id": "--role-id--"
+                },
+                "scope": {
+                    "domain": {
+                        "id": "--domain-id--"
+                    }
+                },
+                "user": {
+                    "id": "--user-id--"
+                }
+            },
+        ]
+
+    Which is hard to work with in the rest of our interface. Map this to be::
+
+        [
+            {
+                "id": "--role-id--",
+                "domain": "--domain-id--",
+                "user": "--user-id--",
+            }
+        ]
+
+    Scope can be "domain" or "project" and "user" can also be "group".
+
+    :param list assignments: A list of dictionaries of role assignments.
+
+    :returns: A list of flattened/normalized role assignment dicts.
+    """
+    new_assignments = []
+    for assignment in assignments:
+        new_val = {'id': assignment['role']['id']}
+        for scope in ('project', 'domain'):
+            if scope in assignment['scope']:
+                new_val[scope] = assignment['scope'][scope]['id']
+        for assignee in ('user', 'group'):
+            if assignee in assignment:
+                new_val[assignee] = assignment[assignee]['id']
+        new_assignments.append(new_val)
+    return new_assignments
 
 
 def valid_kwargs(*valid_args):

@@ -25,6 +25,7 @@ import shade
 from shade import _utils
 from shade import exc
 from shade import meta
+from shade.tests import fakes
 from shade.tests.unit import base
 
 
@@ -80,8 +81,8 @@ class TestShade(base.TestCase):
         get_session_mock.return_value = session_mock
         self.cloud.glance_client
         mock_client.assert_called_with(
-            '2',
-            endpoint='http://example.com',
+            2.0,
+            endpoint_override='http://example.com',
             region_name='', service_name=None,
             interface='public',
             service_type='image', session=mock.ANY,
@@ -95,12 +96,38 @@ class TestShade(base.TestCase):
         self.cloud.heat_client
         mock_client.assert_called_with(
             '1',
+            endpoint_override=None,
             endpoint_type='public',
             region_name='',
             service_name=None,
             service_type='orchestration',
             session=mock.ANY,
         )
+
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_list_networks(self, mock_neutron):
+        net1 = {'id': '1', 'name': 'net1'}
+        net2 = {'id': '2', 'name': 'net2'}
+        mock_neutron.list_networks.return_value = {
+            'networks': [net1, net2]
+        }
+        nets = self.cloud.list_networks()
+        mock_neutron.list_networks.assert_called_once_with()
+        self.assertEqual([net1, net2], nets)
+
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_list_networks_filtered(self, mock_neutron):
+        self.cloud.list_networks(filters={'name': 'test'})
+        mock_neutron.list_networks.assert_called_once_with(name='test')
+
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_list_networks_exception(self, mock_neutron):
+        mock_neutron.list_networks.side_effect = Exception()
+        with testtools.ExpectedException(
+                exc.OpenStackCloudException,
+                "Error fetching network list"
+        ):
+            self.cloud.list_networks()
 
     @mock.patch.object(shade.OpenStackCloud, 'search_subnets')
     def test_get_subnet(self, mock_search):
@@ -217,6 +244,83 @@ class TestShade(base.TestCase):
                                                               router2])
         self.cloud.delete_router('123')
         self.assertTrue(mock_client.delete_router.called)
+
+    @mock.patch.object(shade.OpenStackCloud, 'search_ports')
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_list_router_interfaces_all(self, mock_client, mock_search):
+        internal_port = {'id': 'internal_port_id',
+                         'fixed_ips': [
+                             ('internal_subnet_id', 'ip_address'),
+                         ]}
+        external_port = {'id': 'external_port_id',
+                         'fixed_ips': [
+                             ('external_subnet_id', 'ip_address'),
+                         ]}
+        port_list = [internal_port, external_port]
+        router = {
+            'id': 'router_id',
+            'external_gateway_info': {
+                'external_fixed_ips': [('external_subnet_id', 'ip_address')]
+            }
+        }
+        mock_search.return_value = port_list
+        ret = self.cloud.list_router_interfaces(router)
+        mock_search.assert_called_once_with(
+            filters={'device_id': router['id']}
+        )
+        self.assertEqual(port_list, ret)
+
+    @mock.patch.object(shade.OpenStackCloud, 'search_ports')
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_list_router_interfaces_internal(self, mock_client, mock_search):
+        internal_port = {'id': 'internal_port_id',
+                         'fixed_ips': [
+                             ('internal_subnet_id', 'ip_address'),
+                         ]}
+        external_port = {'id': 'external_port_id',
+                         'fixed_ips': [
+                             ('external_subnet_id', 'ip_address'),
+                         ]}
+        port_list = [internal_port, external_port]
+        router = {
+            'id': 'router_id',
+            'external_gateway_info': {
+                'external_fixed_ips': [('external_subnet_id', 'ip_address')]
+            }
+        }
+        mock_search.return_value = port_list
+        ret = self.cloud.list_router_interfaces(router,
+                                                interface_type='internal')
+        mock_search.assert_called_once_with(
+            filters={'device_id': router['id']}
+        )
+        self.assertEqual([internal_port], ret)
+
+    @mock.patch.object(shade.OpenStackCloud, 'search_ports')
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_list_router_interfaces_external(self, mock_client, mock_search):
+        internal_port = {'id': 'internal_port_id',
+                         'fixed_ips': [
+                             ('internal_subnet_id', 'ip_address'),
+                         ]}
+        external_port = {'id': 'external_port_id',
+                         'fixed_ips': [
+                             ('external_subnet_id', 'ip_address'),
+                         ]}
+        port_list = [internal_port, external_port]
+        router = {
+            'id': 'router_id',
+            'external_gateway_info': {
+                'external_fixed_ips': [('external_subnet_id', 'ip_address')]
+            }
+        }
+        mock_search.return_value = port_list
+        ret = self.cloud.list_router_interfaces(router,
+                                                interface_type='external')
+        mock_search.assert_called_once_with(
+            filters={'device_id': router['id']}
+        )
+        self.assertEqual([external_port], ret)
 
     @mock.patch.object(shade.OpenStackCloud, 'search_networks')
     @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
@@ -396,7 +500,9 @@ class TestShade(base.TestCase):
         to the ServerList task.'''
         mock_serverlist.return_value = [
             munch.Munch({'name': 'testserver',
-                         'id': '1'})
+                         'id': '1',
+                         'flavor': {},
+                         'image': ''})
         ]
 
         r = self.cloud.list_servers()
@@ -411,7 +517,10 @@ class TestShade(base.TestCase):
         '''This test verifies that when list_servers is called with
         `detailed=True` that it calls `get_hostvars_from_server` for each
         server in the list.'''
-        mock_serverlist.return_value = ['server1', 'server2']
+        mock_serverlist.return_value = [
+            fakes.FakeServer('server1', '', 'ACTIVE'),
+            fakes.FakeServer('server2', '', 'ACTIVE'),
+        ]
         mock_get_hostvars_from_server.side_effect = [
             {'name': 'server1', 'id': '1'},
             {'name': 'server2', 'id': '2'},
@@ -457,3 +566,65 @@ class TestShade(base.TestCase):
             for count in _utils._iterate_timeout(0.1, message, wait=1):
                 pass
         mock_sleep.assert_called_with(1.0)
+
+    @mock.patch.object(shade.OpenStackCloud, 'nova_client')
+    def test__nova_extensions(self, mock_nova):
+        body = {
+            'extensions': [
+                {
+                    "updated": "2014-12-03T00:00:00Z",
+                    "name": "Multinic",
+                    "links": [],
+                    "namespace": "http://openstack.org/compute/ext/fake_xml",
+                    "alias": "NMN",
+                    "description": "Multiple network support."
+                },
+                {
+                    "updated": "2014-12-03T00:00:00Z",
+                    "name": "DiskConfig",
+                    "links": [],
+                    "namespace": "http://openstack.org/compute/ext/fake_xml",
+                    "alias": "OS-DCF",
+                    "description": "Disk Management Extension."
+                },
+            ]
+        }
+        mock_nova.client.get.return_value = ('200', body)
+        extensions = self.cloud._nova_extensions()
+        mock_nova.client.get.assert_called_once_with(url='/extensions')
+        self.assertEqual(set(['NMN', 'OS-DCF']), extensions)
+
+    @mock.patch.object(shade.OpenStackCloud, 'nova_client')
+    def test__nova_extensions_fails(self, mock_nova):
+        mock_nova.client.get.side_effect = Exception()
+        with testtools.ExpectedException(
+            exc.OpenStackCloudException,
+            "Error fetching extension list for nova"
+        ):
+            self.cloud._nova_extensions()
+
+    @mock.patch.object(shade.OpenStackCloud, 'nova_client')
+    def test__has_nova_extension(self, mock_nova):
+        body = {
+            'extensions': [
+                {
+                    "updated": "2014-12-03T00:00:00Z",
+                    "name": "Multinic",
+                    "links": [],
+                    "namespace": "http://openstack.org/compute/ext/fake_xml",
+                    "alias": "NMN",
+                    "description": "Multiple network support."
+                },
+                {
+                    "updated": "2014-12-03T00:00:00Z",
+                    "name": "DiskConfig",
+                    "links": [],
+                    "namespace": "http://openstack.org/compute/ext/fake_xml",
+                    "alias": "OS-DCF",
+                    "description": "Disk Management Extension."
+                },
+            ]
+        }
+        mock_nova.client.get.return_value = ('200', body)
+        self.assertTrue(self.cloud._has_nova_extension('NMN'))
+        self.assertFalse(self.cloud._has_nova_extension('invalid'))
