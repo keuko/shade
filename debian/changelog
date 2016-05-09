@@ -6,6 +6,9 @@ python-shade (1.4.0-1) UNRELEASED; urgency=medium
   [ Ondřej Nový ]
   * Fixed VCS URL (https)
 
+  [ Clint Byrum ]
+  * Newer version of os-client-config is required
+
  -- Clint Byrum <spamaps@debian.org>  Mon, 22 Feb 2016 16:13:50 -0800
 
 python-shade (1.3.0-1) unstable; urgency=medium
