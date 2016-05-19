@@ -26,10 +26,6 @@ from shade.tests.unit import base
 
 class TestStack(base.TestCase):
 
-    def setUp(self):
-        super(TestStack, self).setUp()
-        self.cloud = shade.openstack_cloud(validate=False)
-
     @mock.patch.object(shade.OpenStackCloud, 'heat_client')
     def test_list_stacks(self, mock_heat):
         fake_stacks = [
@@ -89,7 +85,7 @@ class TestStack(base.TestCase):
         mock_get.return_value = stack
         self.assertTrue(self.cloud.delete_stack('stack_name'))
         mock_get.assert_called_once_with('stack_name')
-        mock_heat.stacks.delete.assert_called_once_with(id=stack['id'])
+        mock_heat.stacks.delete.assert_called_once_with(stack['id'])
 
     @mock.patch.object(shade.OpenStackCloud, 'get_stack')
     @mock.patch.object(shade.OpenStackCloud, 'heat_client')
@@ -120,6 +116,7 @@ class TestStack(base.TestCase):
         mock_heat.stacks.create.assert_called_once_with(
             stack_name='stack_name',
             disable_rollback=False,
+            environment={},
             parameters={},
             template={},
             files={}
@@ -137,9 +134,20 @@ class TestStack(base.TestCase):
         mock_heat.stacks.create.assert_called_once_with(
             stack_name='stack_name',
             disable_rollback=False,
+            environment={},
             parameters={},
             template={},
             files={}
         )
         self.assertEqual(2, mock_get.call_count)
         self.assertEqual(stack, ret)
+
+    @mock.patch.object(shade.OpenStackCloud, 'heat_client')
+    def test_get_stack(self, mock_heat):
+        stack = fakes.FakeStack('azerty', 'stack',)
+        mock_heat.stacks.list.return_value = [stack]
+        res = self.cloud.get_stack('stack')
+        self.assertIsNotNone(res)
+        self.assertEqual(stack.stack_name, res['stack_name'])
+        self.assertEqual(stack.stack_name, res['name'])
+        self.assertEqual(stack.stack_status, res['stack_status'])

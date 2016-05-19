@@ -14,7 +14,6 @@ import jsonpatch
 
 from ironicclient import client as ironic_client
 from ironicclient import exceptions as ironic_exceptions
-from novaclient import exceptions as nova_exceptions
 
 from shade.exc import *  # noqa
 from shade import openstackcloud
@@ -747,13 +746,14 @@ class OperatorCloud(openstackcloud.OpenStackCloud):
                 _tasks.MachineNodeUpdate(node_id=uuid, patch=patch))
 
     @_utils.valid_kwargs('type', 'service_type', 'description')
-    def create_service(self, name, **kwargs):
+    def create_service(self, name, enabled=True, **kwargs):
         """Create a service.
 
         :param name: Service name.
         :param type: Service type. (type or service_type required.)
         :param service_type: Service type. (type or service_type required.)
         :param description: Service description (optional).
+        :param enabled: Whether the service is enabled (v3 only)
 
         :returns: a dict containing the services description, i.e. the
             following attributes::
@@ -767,19 +767,49 @@ class OperatorCloud(openstackcloud.OpenStackCloud):
             openstack API call.
 
         """
-        service_type = kwargs.get('type', kwargs.get('service_type'))
-        description = kwargs.get('description', None)
-        with _utils.shade_exceptions("Failed to create service {name}".format(
-                name=name)):
-            if self.cloud_config.get_api_version('identity').startswith('2'):
-                service_kwargs = {'service_type': service_type}
-            else:
-                service_kwargs = {'type': service_type}
+        type_ = kwargs.pop('type', None)
+        service_type = kwargs.pop('service_type', None)
 
-            service = self.manager.submitTask(_tasks.ServiceCreate(
-                name=name, description=description, **service_kwargs))
+        if self.cloud_config.get_api_version('identity').startswith('2'):
+            kwargs['service_type'] = type_ or service_type
+        else:
+            kwargs['type'] = type_ or service_type
+            kwargs['enabled'] = enabled
 
-        return service
+        with _utils.shade_exceptions(
+            "Failed to create service {name}".format(name=name)
+        ):
+            service = self.manager.submitTask(
+                _tasks.ServiceCreate(name=name, **kwargs)
+            )
+
+        return _utils.normalize_keystone_services([service])[0]
+
+    @_utils.valid_kwargs('name', 'enabled', 'type', 'service_type',
+                         'description')
+    def update_service(self, name_or_id, **kwargs):
+        # NOTE(SamYaple): Service updates are only available on v3 api
+        if self.cloud_config.get_api_version('identity').startswith('2'):
+            raise OpenStackCloudUnavailableFeature(
+                'Unavailable Feature: Service update requires Identity v3'
+            )
+
+        # NOTE(SamYaple): Keystone v3 only accepts 'type' but shade accepts
+        #                 both 'type' and 'service_type' with a preference
+        #                 towards 'type'
+        type_ = kwargs.pop('type', None)
+        service_type = kwargs.pop('service_type', None)
+        if type_ or service_type:
+            kwargs['type'] = type_ or service_type
+
+        with _utils.shade_exceptions(
+            "Error in updating service {service}".format(service=name_or_id)
+        ):
+            service = self.manager.submitTask(
+                _tasks.ServiceUpdate(service=name_or_id, **kwargs)
+            )
+
+        return _utils.normalize_keystone_services([service])[0]
 
     def list_services(self):
         """List all Keystone services.
@@ -875,9 +905,13 @@ class OperatorCloud(openstackcloud.OpenStackCloud):
         :raises: OpenStackCloudException if the service cannot be found or if
             something goes wrong during the openstack API call.
         """
-        if url and kwargs:
+        public_url = kwargs.pop('public_url', None)
+        internal_url = kwargs.pop('internal_url', None)
+        admin_url = kwargs.pop('admin_url', None)
+
+        if (url or interface) and (public_url or internal_url or admin_url):
             raise OpenStackCloudException(
-                "create_endpoint takes either url and interace OR"
+                "create_endpoint takes either url and interface OR"
                 " public_url, internal_url, admin_url")
 
         service = self.get_service(name_or_id=service_name_or_id)
@@ -898,40 +932,49 @@ class OperatorCloud(openstackcloud.OpenStackCloud):
                         " internal_url, admin_url parameters instead of"
                         " url and interface".format(
                             service=service_name_or_id))
-                urlkwargs['%url' % interface] = url
-                urlkwargs['service_id'] = service['id']
+                urlkwargs['{}url'.format(interface)] = url
             else:
                 urlkwargs['url'] = url
                 urlkwargs['interface'] = interface
-                urlkwargs['enabled'] = enabled
-                urlkwargs['service'] = service['id']
             endpoint_args.append(urlkwargs)
         else:
-            if self.cloud_config.get_api_version(
-                    'identity').startswith('2'):
+            expected_endpoints = {'public': public_url,
+                                  'internal': internal_url,
+                                  'admin': admin_url}
+            if self.cloud_config.get_api_version('identity').startswith('2'):
                 urlkwargs = {}
-                for arg_key, arg_val in kwargs.items():
-                    urlkwargs[arg_key.replace('_', '')] = arg_val
-                urlkwargs['service_id'] = service['id']
+                for interface, url in expected_endpoints.items():
+                    if url:
+                        urlkwargs['{}url'.format(interface)] = url
                 endpoint_args.append(urlkwargs)
             else:
-                for arg_key, arg_val in kwargs.items():
-                    urlkwargs = {}
-                    urlkwargs['url'] = arg_val
-                    urlkwargs['interface'] = arg_key.split('_')[0]
-                    urlkwargs['enabled'] = enabled
-                    urlkwargs['service'] = service['id']
-                    endpoint_args.append(urlkwargs)
+                for interface, url in expected_endpoints.items():
+                    if url:
+                        urlkwargs = {}
+                        urlkwargs['url'] = url
+                        urlkwargs['interface'] = interface
+                        endpoint_args.append(urlkwargs)
+
+        if self.cloud_config.get_api_version('identity').startswith('2'):
+            kwargs['service_id'] = service['id']
+            # Keystone v2 requires 'region' arg even if it is None
+            kwargs['region'] = region
+        else:
+            kwargs['service'] = service['id']
+            kwargs['enabled'] = enabled
+            if region is not None:
+                kwargs['region'] = region
 
         with _utils.shade_exceptions(
-            "Failed to create endpoint for service "
-            "{service}".format(service=service['name'])
+            "Failed to create endpoint for service"
+            " {service}".format(service=service['name'])
         ):
             for args in endpoint_args:
-                endpoint = self.manager.submitTask(_tasks.EndpointCreate(
-                    region=region,
-                    **args
-                ))
+                # NOTE(SamYaple): Add shared kwargs to endpoint args
+                args.update(kwargs)
+                endpoint = self.manager.submitTask(
+                    _tasks.EndpointCreate(**args)
+                )
                 endpoints.append(endpoint)
             return endpoints
 
@@ -1286,6 +1329,31 @@ class OperatorCloud(openstackcloud.OpenStackCloud):
         """
         return _utils._get_entity(self.search_roles, name_or_id, filters)
 
+    def _keystone_v2_role_assignments(self, user, project=None,
+                                      role=None, **kwargs):
+        with _utils.shade_exceptions("Failed to list role assignments"):
+            roles = self.manager.submitTask(
+                _tasks.RolesForUser(user=user, tenant=project)
+            )
+        ret = []
+        for tmprole in roles:
+            if role is not None and role != tmprole.id:
+                continue
+            ret.append({
+                'role': {
+                    'id': tmprole.id
+                },
+                'scope': {
+                    'project': {
+                        'id': project,
+                    }
+                },
+                'user': {
+                    'id': user,
+                }
+            })
+        return ret
+
     def list_role_assignments(self, filters=None):
         """List Keystone role assignments
 
@@ -1304,6 +1372,9 @@ class OperatorCloud(openstackcloud.OpenStackCloud):
             'user' and 'group' are mutually exclusive, as are 'domain' and
             'project'.
 
+        NOTE: For keystone v2, only user, project, and role are used.
+              Project and user are both required in filters.
+
         :returns: a list of dicts containing the role assignment description.
             Contains the following attributes::
 
@@ -1317,10 +1388,17 @@ class OperatorCloud(openstackcloud.OpenStackCloud):
         if not filters:
             filters = {}
 
-        with _utils.shade_exceptions("Failed to list role assignments"):
-            assignments = self.manager.submitTask(
-                _tasks.RoleAssignmentList(**filters)
-            )
+        if self.cloud_config.get_api_version('identity').startswith('2'):
+            if filters.get('project') is None or filters.get('user') is None:
+                raise OpenStackCloudException(
+                    "Must provide project and user for keystone v2"
+                )
+            assignments = self._keystone_v2_role_assignments(**filters)
+        else:
+            with _utils.shade_exceptions("Failed to list role assignments"):
+                assignments = self.manager.submitTask(
+                    _tasks.RoleAssignmentList(**filters)
+                )
         return _utils.normalize_role_assignments(assignments)
 
     def create_flavor(self, name, ram, vcpus, disk, flavorid="auto",
@@ -1350,7 +1428,7 @@ class OperatorCloud(openstackcloud.OpenStackCloud):
                                     is_public=is_public)
             )
 
-        return flavor
+        return _utils.normalize_flavors([flavor])[0]
 
     def delete_flavor(self, name_or_id):
         """Delete a flavor
@@ -1373,47 +1451,6 @@ class OperatorCloud(openstackcloud.OpenStackCloud):
 
         return True
 
-    def _mod_flavor_specs(self, action, flavor_id, specs):
-        """Common method for modifying flavor extra specs.
-
-        Nova (very sadly) doesn't expose this with a public API, so we
-        must get the actual flavor object and make a method call on it.
-
-        Two separate try-except blocks are used because Nova can raise
-        a NotFound exception if FlavorGet() is given an invalid flavor ID,
-        or if the unset_keys() method of the flavor object is given an
-        invalid spec key. We need to be able to differentiate between these
-        actions, thus the separate blocks.
-        """
-        try:
-            flavor = self.manager.submitTask(
-                _tasks.FlavorGet(flavor=flavor_id)
-            )
-        except nova_exceptions.NotFound:
-            self.log.debug(
-                "Flavor ID {0} not found. "
-                "Cannot {1} extra specs.".format(flavor_id, action)
-            )
-            raise OpenStackCloudResourceNotFound(
-                "Flavor ID {0} not found".format(flavor_id)
-            )
-        except OpenStackCloudException:
-            raise
-        except Exception as e:
-            raise OpenStackCloudException(
-                "Error getting flavor ID {0}: {1}".format(flavor_id, e)
-            )
-
-        try:
-            if action == 'set':
-                flavor.set_keys(specs)
-            elif action == 'unset':
-                flavor.unset_keys(specs)
-        except Exception as e:
-            raise OpenStackCloudException(
-                "Unable to {0} flavor specs: {1}".format(action, e)
-            )
-
     def set_flavor_specs(self, flavor_id, extra_specs):
         """Add extra specs to a flavor
 
@@ -1423,7 +1460,14 @@ class OperatorCloud(openstackcloud.OpenStackCloud):
         :raises: OpenStackCloudException on operation error.
         :raises: OpenStackCloudResourceNotFound if flavor ID is not found.
         """
-        self._mod_flavor_specs('set', flavor_id, extra_specs)
+        try:
+            self.manager.submitTask(
+                _tasks.FlavorSetExtraSpecs(
+                    id=flavor_id, json=dict(extra_specs=extra_specs)))
+        except Exception as e:
+            raise OpenStackCloudException(
+                "Unable to set flavor specs: {0}".format(str(e))
+            )
 
     def unset_flavor_specs(self, flavor_id, keys):
         """Delete extra specs from a flavor
@@ -1434,7 +1478,14 @@ class OperatorCloud(openstackcloud.OpenStackCloud):
         :raises: OpenStackCloudException on operation error.
         :raises: OpenStackCloudResourceNotFound if flavor ID is not found.
         """
-        self._mod_flavor_specs('unset', flavor_id, keys)
+        for key in keys:
+            try:
+                self.manager.submitTask(
+                    _tasks.FlavorUnsetExtraSpecs(id=flavor_id, key=key))
+            except Exception as e:
+                raise OpenStackCloudException(
+                    "Unable to delete flavor spec {0}: {0}".format(
+                        key, str(e)))
 
     def _mod_flavor_access(self, action, flavor_id, project_id):
         """Common method for adding and removing flavor access
@@ -1508,6 +1559,161 @@ class OperatorCloud(openstackcloud.OpenStackCloud):
                 name=name_or_id)):
             self.manager.submitTask(_tasks.RoleDelete(role=role['id']))
 
+        return True
+
+    def _get_grant_revoke_params(self, role, user=None, group=None,
+                                 project=None, domain=None):
+        role = self.get_role(role)
+        if role is None:
+            return {}
+        data = {'role': role.id}
+
+        # domain and group not available in keystone v2.0
+        keystone_version = self.cloud_config.get_api_version('identity')
+        is_keystone_v2 = keystone_version.startswith('2')
+
+        filters = {}
+        if not is_keystone_v2 and domain:
+            filters['domain_id'] = data['domain'] = \
+                self.get_domain(domain)['id']
+
+        if user:
+            data['user'] = self.get_user(user, filters=filters)
+
+        if project:
+            # drop domain in favor of project
+            data.pop('domain', None)
+            data['project'] = self.get_project(project, filters=filters)
+
+        if not is_keystone_v2 and group:
+            data['group'] = self.get_group(group, filters=filters)
+
+        return data
+
+    def grant_role(self, name_or_id, user=None, group=None,
+                   project=None, domain=None, wait=False, timeout=60):
+        """Grant a role to a user.
+
+        :param string name_or_id: The name or id of the role.
+        :param string user: The name or id of the user.
+        :param string group: The name or id of the group. (v3)
+        :param string project: The name or id of the project.
+        :param string domain: The id of the domain. (v3)
+        :param bool wait: Wait for role to be granted
+        :param int timeout: Timeout to wait for role to be granted
+
+        NOTE: for wait and timeout, sometimes granting roles is not
+              instantaneous for granting roles.
+
+        NOTE: project is required for keystone v2
+
+        :returns: True if the role is assigned, otherwise False
+
+        :raise OpenStackCloudException: if the role cannot be granted
+        """
+        data = self._get_grant_revoke_params(name_or_id, user, group,
+                                             project, domain)
+        filters = data.copy()
+        if not data:
+            raise OpenStackCloudException(
+                'Role {0} not found.'.format(name_or_id))
+
+        if data.get('user') is not None and data.get('group') is not None:
+            raise OpenStackCloudException(
+                'Specify either a group or a user, not both')
+        if data.get('user') is None and data.get('group') is None:
+            raise OpenStackCloudException(
+                'Must specify either a user or a group')
+        if self.cloud_config.get_api_version('identity').startswith('2') and \
+                data.get('project') is None:
+            raise OpenStackCloudException(
+                'Must specify project for keystone v2')
+
+        if self.list_role_assignments(filters=filters):
+            self.log.debug('Assignment already exists')
+            return False
+
+        with _utils.shade_exceptions(
+                "Error granting access to role: {0}".format(
+                data)):
+            if self.cloud_config.get_api_version('identity').startswith('2'):
+                data['tenant'] = data.pop('project')
+                self.manager.submitTask(_tasks.RoleAddUser(**data))
+            else:
+                if data.get('project') is None and data.get('domain') is None:
+                    raise OpenStackCloudException(
+                        'Must specify either a domain or project')
+                self.manager.submitTask(_tasks.RoleGrantUser(**data))
+        if wait:
+            for count in _utils._iterate_timeout(
+                    timeout,
+                    "Timeout waiting for role to be granted"):
+                if self.list_role_assignments(filters=filters):
+                    break
+        return True
+
+    def revoke_role(self, name_or_id, user=None, group=None,
+                    project=None, domain=None, wait=False, timeout=60):
+        """Revoke a role from a user.
+
+        :param string name_or_id: The name or id of the role.
+        :param string user: The name or id of the user.
+        :param string group: The name or id of the group. (v3)
+        :param string project: The name or id of the project.
+        :param string domain: The id of the domain. (v3)
+        :param bool wait: Wait for role to be revoked
+        :param int timeout: Timeout to wait for role to be revoked
+
+        NOTE: for wait and timeout, sometimes revoking roles is not
+              instantaneous for revoking roles.
+
+        NOTE: project is required for keystone v2
+
+        :returns: True if the role is revoke, otherwise False
+
+        :raise OpenStackCloudException: if the role cannot be removed
+        """
+        data = self._get_grant_revoke_params(name_or_id, user, group,
+                                             project, domain)
+        filters = data.copy()
+
+        if not data:
+            raise OpenStackCloudException(
+                'Role {0} not found.'.format(name_or_id))
+
+        if data.get('user') is not None and data.get('group') is not None:
+            raise OpenStackCloudException(
+                'Specify either a group or a user, not both')
+        if data.get('user') is None and data.get('group') is None:
+            raise OpenStackCloudException(
+                'Must specify either a user or a group')
+        if self.cloud_config.get_api_version('identity').startswith('2') and \
+                data.get('project') is None:
+            raise OpenStackCloudException(
+                'Must specify project for keystone v2')
+
+        if not self.list_role_assignments(filters=filters):
+            self.log.debug('Assignment does not exist')
+            return False
+
+        with _utils.shade_exceptions(
+                "Error revoking access to role: {0}".format(
+                data)):
+            if self.cloud_config.get_api_version('identity').startswith('2'):
+                data['tenant'] = data.pop('project')
+                self.manager.submitTask(_tasks.RoleRemoveUser(**data))
+            else:
+                if data.get('project') is None \
+                        and data.get('domain') is None:
+                    raise OpenStackCloudException(
+                        'Must specify either a domain or project')
+                self.manager.submitTask(_tasks.RoleRevokeUser(**data))
+        if wait:
+            for count in _utils._iterate_timeout(
+                    timeout,
+                    "Timeout waiting for role to be revoked"):
+                if not self.list_role_assignments(filters=filters):
+                    break
         return True
 
     def list_hypervisors(self):

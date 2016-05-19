@@ -16,7 +16,6 @@
 import mock
 import os_client_config
 from os_client_config import cloud_config
-from swiftclient import client as swift_client
 from swiftclient import service as swift_service
 from swiftclient import exceptions as swift_exc
 import testtools
@@ -35,24 +34,6 @@ class TestObject(base.TestCase):
         config = os_client_config.OpenStackConfig()
         self.cloud = OpenStackCloud(
             cloud_config=config.get_one_cloud(validate=False))
-
-    @mock.patch.object(swift_client, 'Connection')
-    @mock.patch.object(cloud_config.CloudConfig, 'get_session')
-    def test_swift_client(self, get_session_mock, swift_mock):
-        session_mock = mock.Mock()
-        session_mock.get_endpoint.return_value = 'danzig'
-        session_mock.get_token.return_value = 'yankee'
-        get_session_mock.return_value = session_mock
-
-        self.cloud.swift_client
-        swift_mock.assert_called_with(
-            preauthurl='danzig',
-            preauthtoken='yankee',
-            auth_version=mock.ANY,
-            os_options=dict(
-                object_storage_url='danzig',
-                auth_token='yankee',
-                region_name=''))
 
     @mock.patch.object(cloud_config.CloudConfig, 'get_session')
     def test_swift_client_no_endpoint(self, get_session_mock):
@@ -321,4 +302,33 @@ class TestObject(base.TestCase):
             "ERROR")
         self.assertRaises(shade.OpenStackCloudException,
                           self.cloud.delete_object,
+                          container_name, object_name)
+
+    @mock.patch.object(shade.OpenStackCloud, 'swift_client')
+    def test_get_object(self, mock_swift):
+        fake_resp = ({'headers': 'yup'}, 'test body')
+        mock_swift.get_object.return_value = fake_resp
+        container_name = 'container_name'
+        object_name = 'object_name'
+        resp = self.cloud.get_object(container_name, object_name)
+        self.assertEqual(fake_resp, resp)
+
+    @mock.patch.object(shade.OpenStackCloud, 'swift_client')
+    def test_get_object_not_found(self, mock_swift):
+        mock_swift.get_object.side_effect = swift_exc.ClientException(
+            'ERROR', http_status=404)
+        container_name = 'container_name'
+        object_name = 'object_name'
+        self.assertIsNone(self.cloud.get_object(container_name, object_name))
+        mock_swift.get_object.assert_called_once_with(
+            container=container_name, obj=object_name,
+            query_string=None, resp_chunk_size=None)
+
+    @mock.patch.object(shade.OpenStackCloud, 'swift_client')
+    def test_get_object_exception(self, mock_swift):
+        mock_swift.get_object.side_effect = swift_exc.ClientException("ERROR")
+        container_name = 'container_name'
+        object_name = 'object_name'
+        self.assertRaises(shade.OpenStackCloudException,
+                          self.cloud.get_object,
                           container_name, object_name)

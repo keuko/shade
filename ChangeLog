@@ -1,6 +1,112 @@
 CHANGES
 =======
 
+1.7.0
+-----
+
+* Cache ports like servers
+* Workaround multiple private network ports
+* Reset network caches after network create/delete
+* Fix test_list_servers unit test
+* Fix test_get_server_ip unit test
+* Remove duplicate FakeServer class from unit tests
+* Mutex protect internal/external network detection
+* Support provider networks in public network detection
+* Re-allow list of networks for FIP assignment
+* Support InsecureRequestWarning == None
+* Add release notes for new create_image_snapshot() args
+* Split waiting for images into its own method
+
+1.6.2
+-----
+
+* Add wait support to create_image_snapshot()
+* Also add server interfaces for server get
+* Import os module as it is referenced in line 2097
+* Fix grant_role docstring
+
+1.6.1
+-----
+
+* Add default value to wait parameter
+
+1.6.0
+-----
+
+* Use OpenStackCloudException when _delete_server(
+* Always do network interface introspection
+* Fix race condition in deleting volumes
+* Use direct requests for flavor extra_specs set/unset
+* Fix search_projects docstring
+* Fix search_users docstring
+* Deal with is_public and ephemeral in normalize_flavors
+* Create clouds in Functional Test base class
+* Run extra specs through TaskManager and use requests
+* Bug fix: Make set/unset of flavor specs work again
+* Refactor unit tests to construct cloud in base
+* Add constructor param to turn on inner logging
+* Log inner_exception in test runs
+* Add environment_files to stack_create
+* Add normalize stack function for heat stack_list
+* Add wait_for_server API call
+* Update create_endpoint()
+* Test v3 params on v2.0 endpoint; Add v3 unit
+* Add update_service()
+* Use network in neutron_available_floating_ips
+* Allow passing project_id to create_network
+
+1.5.1
+-----
+
+* In the service lock, reset the service, not the lock
+* Bug fix: Do not fail on routers with no ext gw
+
+1.5.0
+-----
+
+* Mock glance v1 image with object not dict
+* Use warlock in the glance v2 tests
+* Fixes for latest cinder and neutron clients
+* Add debug message about file hash calculation
+* Pass username/password to SwiftService
+* Also reset swift service object at upload time
+* Invalidate volume cache when waiting for attach
+* Use isinstance() for result type checking
+* Add test for os_server Ansible module
+* Fix create_server() with a named network
+* os_router playbook cleanup
+* Fix heat create_stack and delete_stack
+* Catch failures with particular clouds
+* Allow testing against Ansible dev branch
+* Recognize subclasses of list types
+* Add ability to pass just filename to create_image
+* Add support for provider network options
+* Remove mock testing of os-client-config for swift
+* Add a method to download an image from glance
+* Add test option to use Ansible source repo
+* Add enabled flag to keystone service data
+* Clarify Munch object usage in documentation
+* Add docs tox target
+* create_service() should normalize return value
+* Prepare functional test subunit stream for collection
+* Use release version of Ansible for testing
+* Modify test workaround for extra_dhcp_opts
+* Fix for stable/liberty job
+* granting and revoking privs to users and groups
+* Add release note for FIP timeout fix
+* include keystonev2 role assignments
+* Add release note for new get_object() API call
+* Pass timeout through to floating ip creation
+* Fix normalize_role_assignments() return value
+* Remove a done todo list item
+* add the ability to get an object back from swift
+* allow for updating passwords in keystone v2
+* Support neutron subnets without gateway IPs
+* Save the adminPass if returned on server create
+* Fix unit tests that validate client call arguments
+* Allow inventory filtering by cloud name
+* Add range search functionality
+
 1.4.0
 -----
 

@@ -20,6 +20,14 @@ sudo chown -R jenkins:stack $SHADE_DIR
 
 CLOUDS_YAML=/etc/openstack/clouds.yaml
 
+if [ ! -e ${CLOUDS_YAML} ]
+then
+    # stable/liberty had clouds.yaml in the home/base directory
+    sudo mkdir -p /etc/openstack
+    sudo cp $BASE/new/.config/openstack/clouds.yaml ${CLOUDS_YAML}
+    sudo chown -R jenkins:stack /etc/openstack
+fi
+
 # Devstack runs both keystone v2 and v3. An environment variable is set
 # within the shade keystone v2 job that tells us which version we should
 # test against.
@@ -33,6 +41,7 @@ echo "Running shade functional test suite"
 set +e
 sudo -E -H -u jenkins tox -efunctional
 EXIT_CODE=$?
+sudo testr last --subunit > $WORKSPACE/tempest.subunit
 set -e
 
 exit $EXIT_CODE

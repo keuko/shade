@@ -14,8 +14,10 @@ import functools
 import hashlib
 import ipaddress
 import operator
+import os
 import os_client_config
 import os_client_config.defaults
+import six
 import threading
 import time
 import warnings
@@ -24,6 +26,7 @@ from dogpile import cache
 import requestsexceptions
 
 import cinderclient.client
+import cinderclient.exceptions as cinder_exceptions
 import glanceclient
 import glanceclient.exc
 import heatclient.client
@@ -54,6 +57,8 @@ IMAGE_ERROR_396 = "Image cannot be imported. Error code: '396'"
 DEFAULT_OBJECT_SEGMENT_SIZE = 1073741824  # 1GB
 # This halves the current default for Swift
 DEFAULT_MAX_FILE_SIZE = (5 * 1024 * 1024 * 1024 + 2) / 2
+DEFAULT_SERVER_AGE = 5
+DEFAULT_PORT_AGE = 5
 
 
 OBJECT_CONTAINER_ACLS = {
@@ -101,17 +106,28 @@ class OpenStackCloud(object):
                                 OpenStack API tasks. Unless you're doing
                                 rate limiting client side, you almost
                                 certainly don't need this. (optional)
+    :param bool log_inner_exceptions: Send wrapped exceptions to the error log.
+                                      Defaults to false, because there are a
+                                      number of wrapped exceptions that are
+                                      noise for normal usage. It's possible
+                                      that for a user that has python logging
+                                      configured properly, it's desirable to
+                                      have all of the wrapped exceptions be
+                                      emitted to the error log. This flag
+                                      will enable that behavior.
     :param CloudConfig cloud_config: Cloud config object from os-client-config
                                      In the future, this will be the only way
                                      to pass in cloud configuration, but is
                                      being phased in currently.
     """
-    _SERVER_LIST_AGE = 5  # TODO(mordred) Make this configurable
 
     def __init__(
             self,
             cloud_config=None,
-            manager=None, **kwargs):
+            manager=None, log_inner_exceptions=False, **kwargs):
+
+        if log_inner_exceptions:
+            OpenStackCloudException.log_inner_exceptions = True
 
         self.log = _log.setup_logging('shade')
         if not cloud_config:
@@ -128,23 +144,15 @@ class OpenStackCloud(object):
         self.secgroup_source = cloud_config.config['secgroup_source']
         self.force_ipv4 = cloud_config.force_ipv4
 
-        self._external_networks = []
         self._external_network_name_or_id = cloud_config.config.get(
             'external_network', None)
         self._use_external_network = cloud_config.config.get(
             'use_external_network', True)
 
-        self._internal_networks = []
         self._internal_network_name_or_id = cloud_config.config.get(
             'internal_network', None)
         self._use_internal_network = cloud_config.config.get(
             'use_internal_network', True)
-
-        # Variables to prevent us from going through the network finding
-        # logic again if we've done it once. This is different from just
-        # the cached value, since "None" is a valid value to find.
-        self._external_network_stamp = False
-        self._internal_network_stamp = False
 
         if manager is not None:
             self.manager = manager
@@ -160,11 +168,20 @@ class OpenStackCloud(object):
             self.log.debug(
                 "Turning off Insecure SSL warnings since verify=False")
             category = requestsexceptions.InsecureRequestWarning
-            warnings.filterwarnings('ignore', category=category)
+            if category:
+                # InsecureRequestWarning references a Warning class or is None
+                warnings.filterwarnings('ignore', category=category)
 
         self._servers = []
         self._servers_time = 0
         self._servers_lock = threading.Lock()
+
+        self._ports = []
+        self._ports_time = 0
+        self._ports_lock = threading.Lock()
+
+        self._networks_lock = threading.Lock()
+        self._reset_network_caches()
 
         cache_expiration_time = int(cloud_config.get_cache_expiration_time())
         cache_class = cloud_config.get_cache_class()
@@ -177,6 +194,8 @@ class OpenStackCloud(object):
                 cache_class,
                 expiration_time=cache_expiration_time,
                 arguments=cache_arguments)
+            self._SERVER_AGE = DEFAULT_SERVER_AGE
+            self._PORT_AGE = DEFAULT_PORT_AGE
         else:
             def _fake_invalidate(unused):
                 pass
@@ -188,7 +207,8 @@ class OpenStackCloud(object):
             # Don't cache list_servers if we're not caching things.
             # Replace this with a more specific cache configuration
             # soon.
-            self._SERVER_LIST_AGE = 2
+            self._SERVER_AGE = 0
+            self._PORT_AGE = 0
             self._cache = _FakeCache()
             # Undecorate cache decorated methods. Otherwise the call stacks
             # wind up being stupidly long and hard to debug
@@ -204,8 +224,10 @@ class OpenStackCloud(object):
 
         # If server expiration time is set explicitly, use that. Otherwise
         # fall back to whatever it was before
-        self._SERVER_LIST_AGE = cloud_config.get_cache_resource_expiration(
-            'server', self._SERVER_LIST_AGE)
+        self._SERVER_AGE = cloud_config.get_cache_resource_expiration(
+            'server', self._SERVER_AGE)
+        self._PORT_AGE = cloud_config.get_cache_resource_expiration(
+            'port', self._PORT_AGE)
 
         self._container_cache = dict()
         self._file_hash_cache = dict()
@@ -220,12 +242,16 @@ class OpenStackCloud(object):
         self._neutron_client = None
         self._nova_client = None
         self._swift_client = None
-        # Lock used to reset client as swift client does not
-        # support keystone sessions meaning that we have to make
-        # a new client in order to get new auth prior to operations.
-        self._swift_client_lock = threading.Lock()
         self._swift_service = None
+        # Lock used to reset swift client.  Since swift client does not
+        # support keystone sessions, we we have to make a new client
+        # in order to get new auth prior to operations, otherwise
+        # long-running sessions will fail.
+        self._swift_client_lock = threading.Lock()
+        self._swift_service_lock = threading.Lock()
         self._trove_client = None
+
+        self._raw_clients = {}
 
         self._local_ipv6 = _utils.localhost_supports_ipv6()
 
@@ -267,6 +293,15 @@ class OpenStackCloud(object):
                 " This could mean that your credentials are wrong.".format(
                     service=service_key))
         return client
+
+    def _get_raw_client(self, service_key):
+        return self.cloud_config.get_session_client(service_key)
+
+    @property
+    def _compute_client(self):
+        if 'compute' not in self._raw_clients:
+            self._raw_clients['compute'] = self._get_raw_client('compute')
+        return self._raw_clients['compute']
 
     @property
     def nova_client(self):
@@ -351,6 +386,53 @@ class OpenStackCloud(object):
         ret.update(self._get_project_param_dict(project))
         return ret
 
+    def range_search(self, data, filters):
+        """Perform integer range searches across a list of dictionaries.
+
+        Given a list of dictionaries, search across the list using the given
+        dictionary keys and a range of integer values for each key. Only
+        dictionaries that match ALL search filters across the entire original
+        data set will be returned.
+
+        It is not a requirement that each dictionary contain the key used
+        for searching. Those without the key will be considered non-matching.
+
+        The range values must be string values and is either a set of digits
+        representing an integer for matching, or a range operator followed by
+        a set of digits representing an integer for matching. If a range
+        operator is not given, exact value matching will be used. Valid
+        operators are one of: <,>,<=,>=
+
+        :param list data: List of dictionaries to be searched.
+        :param dict filters: Dict describing the one or more range searches to
+            perform. If more than one search is given, the result will be the
+            members of the original data set that match ALL searches. An
+            example of filtering by multiple ranges::
+
+                {"vcpus": "<=5", "ram": "<=2048", "disk": "1"}
+
+        :returns: A list subset of the original data set.
+        :raises: OpenStackCloudException on invalid range expressions.
+        """
+        filtered = []
+
+        for key, range_value in filters.items():
+            # We always want to operate on the full data set so that
+            # calculations for minimum and maximum are correct.
+            results = _utils.range_filter(data, key, range_value)
+
+            if not filtered:
+                # First set of results
+                filtered = results
+            else:
+                # The combination of all searches should be the intersection of
+                # all result sets from each search. So adjust the current set
+                # of filtered data by computing its intersection with the
+                # latest result set.
+                filtered = [r for r in results for f in filtered if r == f]
+
+        return filtered
+
     @_utils.cache_on_arguments()
     def list_projects(self):
         """List Keystone Projects.
@@ -373,7 +455,7 @@ class OpenStackCloud(object):
         :param name: project name or id.
         :param filters: a dict containing additional filters to use.
 
-        :returns: a list of dict containing the role description
+        :returns: a list of dict containing the projects
 
         :raises: ``OpenStackCloudException``: if something goes wrong during
             the openstack API call.
@@ -464,7 +546,7 @@ class OpenStackCloud(object):
         :param string name: user name or id.
         :param dict filters: a dict containing additional filters to use.
 
-        :returns: a list of dict containing the role description
+        :returns: a list of dict containing the users
 
         :raises: ``OpenStackCloudException``: if something goes wrong during
             the openstack API call.
@@ -513,9 +595,15 @@ class OpenStackCloud(object):
         if self.cloud_config.get_api_version('identity') != '3':
             # Do not pass v3 args to a v2 keystone.
             kwargs.pop('domain_id', None)
-            kwargs.pop('password', None)
             kwargs.pop('description', None)
             kwargs.pop('default_project', None)
+            password = kwargs.pop('password', None)
+            if password is not None:
+                with _utils.shade_exceptions(
+                        "Error updating password for {user}".format(
+                            user=name_or_id)):
+                    user = self.manager.submitTask(_tasks.UserPasswordUpdate(
+                        user=kwargs['user'], password=password))
         elif 'domain_id' in kwargs:
             # The incoming parameter is domain_id in order to match the
             # parameter name in create_user(), but UserUpdate() needs it
@@ -671,18 +759,44 @@ class OpenStackCloud(object):
                     'object-store', swiftclient.client.Connection)
             return self._swift_client
 
+    def _get_swift_kwargs(self):
+        auth_version = self.cloud_config.get_api_version('identity')
+        auth_args = self.cloud_config.config.get('auth', {})
+        os_options = {'auth_version': auth_version}
+        if auth_version == '2.0':
+            os_options['os_tenant_name'] = auth_args.get('project_name')
+            os_options['os_tenant_id'] = auth_args.get('project_id')
+        else:
+            os_options['os_project_name'] = auth_args.get('project_name')
+            os_options['os_project_id'] = auth_args.get('project_id')
+
+        for key in (
+                'username',
+                'password',
+                'auth_url',
+                'user_id',
+                'project_domain_id',
+                'project_domain_name',
+                'user_domain_id',
+                'user_domain_name'):
+            os_options['os_{key}'.format(key=key)] = auth_args.get(key)
+        return os_options
+
     @property
     def swift_service(self):
-        if self._swift_service is None:
-            with _utils.shade_exceptions("Error constructing swift client"):
-                endpoint = self.get_session_endpoint(
-                    service_key='object-store')
-                options = dict(os_auth_token=self.auth_token,
-                               os_storage_url=endpoint,
-                               os_region_name=self.region_name)
-                self._swift_service = swiftclient.service.SwiftService(
-                    options=options)
-        return self._swift_service
+        with self._swift_service_lock:
+            if self._swift_service is None:
+                with _utils.shade_exceptions("Error constructing "
+                                             "swift client"):
+                    endpoint = self.get_session_endpoint(
+                        service_key='object-store')
+                    options = dict(os_auth_token=self.auth_token,
+                                   os_storage_url=endpoint,
+                                   os_region_name=self.region_name)
+                    options.update(self._get_swift_kwargs())
+                    self._swift_service = swiftclient.service.SwiftService(
+                        options=options)
+            return self._swift_service
 
     @property
     def cinder_client(self):
@@ -712,7 +826,10 @@ class OpenStackCloud(object):
             template_object=None, files=None,
             rollback=True,
             wait=False, timeout=180,
+            environment_files=None,
             **parameters):
+        envfiles, env = template_utils.process_multiple_environments_and_files(
+            env_paths=environment_files)
         tpl_files, template = template_utils.get_template_contents(
             template_file=template_file,
             template_url=template_url,
@@ -723,7 +840,8 @@ class OpenStackCloud(object):
             disable_rollback=not rollback,
             parameters=parameters,
             template=template,
-            files=tpl_files,
+            files=dict(list(tpl_files.items()) + list(envfiles.items())),
+            environment=env,
         )
         with _utils.shade_exceptions("Error creating stack {name}".format(
                 name=name)):
@@ -733,7 +851,7 @@ class OpenStackCloud(object):
         for count in _utils._iterate_timeout(
                 timeout,
                 "Timed out waiting for heat stack to finish"):
-            stack = self.get_stack(name, cache=False)
+            stack = self.get_stack(name)
             if stack:
                 return stack
 
@@ -828,10 +946,9 @@ class OpenStackCloud(object):
         extensions = set()
 
         with _utils.shade_exceptions("Error fetching extension list for nova"):
-            body = self.manager.submitTask(
-                _tasks.NovaUrlGet(url='/extensions'))
-            for x in body['extensions']:
-                extensions.add(x['alias'])
+            for extension in self.manager.submitTask(
+                    _tasks.NovaListExtensions()):
+                extensions.add(extension['alias'])
 
         return extensions
 
@@ -899,7 +1016,14 @@ class OpenStackCloud(object):
         :raises: ``OpenStackCloudException`` if something goes wrong during the
             openstack API call.
         """
-        ports = self.list_ports(filters)
+        # If port caching is enabled, do not push the filter down to
+        # neutron; get all the ports (potentially from the cache) and
+        # filter locally.
+        if self._PORT_AGE:
+            pushdown_filters = None
+        else:
+            pushdown_filters = filters
+        ports = self.list_ports(pushdown_filters)
         return _utils._filter_list(ports, name_or_id, filters)
 
     def search_volumes(self, name_or_id=None, filters=None):
@@ -1015,11 +1139,32 @@ class OpenStackCloud(object):
         :returns: A list of port dicts.
 
         """
+        # If pushdown filters are specified, bypass local caching.
+        if filters:
+            return self._list_ports(filters)
         # Translate None from search interface to empty {} for kwargs below
-        if not filters:
-            filters = {}
+        filters = {}
+        if (time.time() - self._ports_time) >= self._PORT_AGE:
+            # Since we're using cached data anyway, we don't need to
+            # have more than one thread actually submit the list
+            # ports task.  Let the first one submit it while holding
+            # a lock, and the non-blocking acquire method will cause
+            # subsequent threads to just skip this and use the old
+            # data until it succeeds.
+            # For the first time, when there is no data, make the call
+            # blocking.
+            if self._ports_lock.acquire(len(self._ports) == 0):
+                try:
+                    self._ports = self._list_ports(filters)
+                    self._ports_time = time.time()
+                finally:
+                    self._ports_lock.release()
+        return self._ports
+
+    def _list_ports(self, filters):
         with _utils.neutron_exceptions("Error fetching port list"):
-            return self.manager.submitTask(_tasks.PortList(**filters))['ports']
+            return self.manager.submitTask(
+                _tasks.PortList(**filters))['ports']
 
     @_utils.cache_on_arguments(should_cache_fn=_no_pending_volumes)
     def list_volumes(self, cache=True):
@@ -1036,14 +1181,26 @@ class OpenStackCloud(object):
                 self.manager.submitTask(_tasks.VolumeList()))
 
     @_utils.cache_on_arguments()
-    def list_flavors(self):
+    def list_flavors(self, get_extra=True):
         """List all available flavors.
 
         :returns: A list of flavor dicts.
 
         """
         with _utils.shade_exceptions("Error fetching flavor list"):
-            return self.manager.submitTask(_tasks.FlavorList(is_public=None))
+            flavors = self.manager.submitTask(
+                _tasks.FlavorList(is_public=None))
+
+        with _utils.shade_exceptions("Error fetching flavor extra specs"):
+            for flavor in flavors:
+                if 'OS-FLV-WITH-EXT-SPECS:extra_specs' in flavor:
+                    flavor.extra_specs = flavor.get(
+                        'OS-FLV-WITH-EXT-SPECS:extra_specs')
+                elif get_extra:
+                    flavor.extra_specs = self.manager.submitTask(
+                        _tasks.FlavorGetExtraSpecs(id=flavor.id))
+
+        return _utils.normalize_flavors(flavors)
 
     @_utils.cache_on_arguments(should_cache_fn=_no_pending_stacks)
     def list_stacks(self):
@@ -1056,7 +1213,7 @@ class OpenStackCloud(object):
         """
         with _utils.shade_exceptions("Error fetching stack list"):
             stacks = self.manager.submitTask(_tasks.StackList())
-        return stacks
+        return _utils.normalize_stacks(stacks)
 
     def list_server_security_groups(self, server):
         """List all security groups associated with the given server.
@@ -1107,7 +1264,7 @@ class OpenStackCloud(object):
         :returns: A list of server dicts.
 
         """
-        if (time.time() - self._servers_time) >= self._SERVER_LIST_AGE:
+        if (time.time() - self._servers_time) >= self._SERVER_AGE:
             # Since we're using cached data anyway, we don't need to
             # have more than one thread actually submit the list
             # servers task.  Let the first one submit it while holding
@@ -1139,7 +1296,10 @@ class OpenStackCloud(object):
                     for server in servers
                 ]
             else:
-                return servers
+                return [
+                    meta.add_server_interfaces(self, server)
+                    for server in servers
+                ]
 
     @_utils.cache_on_arguments(should_cache_fn=_no_pending_images)
     def list_images(self, filter_deleted=True):
@@ -1227,6 +1387,16 @@ class OpenStackCloud(object):
     def use_internal_network(self):
         return self._use_internal_network
 
+    def _reset_network_caches(self):
+        # Variables to prevent us from going through the network finding
+        # logic again if we've done it once. This is different from just
+        # the cached value, since "None" is a valid value to find.
+        with self._networks_lock:
+            self._external_networks = []
+            self._internal_networks = []
+            self._external_network_stamp = False
+            self._internal_network_stamp = False
+
     def _get_network(
             self,
             name_or_id,
@@ -1269,13 +1439,25 @@ class OpenStackCloud(object):
 
         :returns: A list of network dicts if one is found
         """
-        self._external_networks = self._get_network(
-            self._external_network_name_or_id,
-            self.use_external_network,
-            self._external_networks,
-            self._external_network_stamp,
-            filters={'router:external': True})
-        self._external_network_stamp = True
+        if self._networks_lock.acquire():
+            try:
+                _all_networks = self._get_network(
+                    self._external_network_name_or_id,
+                    self.use_external_network,
+                    self._external_networks,
+                    self._external_network_stamp,
+                    filters=None)
+                # Filter locally because we have an or condition
+                _external_networks = []
+                for network in _all_networks:
+                    if (('router:external' in network
+                            and network['router:external']) or
+                            'provider:network_type' in network):
+                        _external_networks.append(network)
+                self._external_networks = _external_networks
+                self._external_network_stamp = True
+            finally:
+                self._networks_lock.release()
         return self._external_networks
 
     def get_internal_networks(self):
@@ -1283,15 +1465,25 @@ class OpenStackCloud(object):
 
         :returns: A list of network dicts if one is found
         """
-        self._internal_networks = self._get_network(
-            self._internal_network_name_or_id,
-            self.use_internal_network,
-            self._internal_networks,
-            self._internal_network_stamp,
-            filters={
-                'router:external': False,
-            })
-        self._internal_network_stamp = True
+        # Just router:external False is not enough.
+        if self._networks_lock.acquire():
+            try:
+                _all_networks = self._get_network(
+                    self._internal_network_name_or_id,
+                    self.use_internal_network,
+                    self._internal_networks,
+                    self._internal_network_stamp,
+                    filters={
+                        'router:external': False,
+                    })
+                _internal_networks = []
+                for network in _all_networks:
+                    if 'provider:network_type' not in network:
+                        _internal_networks.append(network)
+                self._internal_networks = _internal_networks
+                self._internal_network_stamp = True
+            finally:
+                self._networks_lock.release()
         return self._internal_networks
 
     def get_keypair(self, name_or_id, filters=None):
@@ -1486,9 +1678,9 @@ class OpenStackCloud(object):
         return _utils._get_entity(searchfunc, name_or_id, filters)
 
     def get_server_by_id(self, id):
-        return _utils.normalize_server(
+        return meta.add_server_interfaces(self, _utils.normalize_server(
             self.manager.submitTask(_tasks.ServerGet(server=id)),
-            cloud_name=self.name, region_name=self.region_name)
+            cloud_name=self.name, region_name=self.region_name))
 
     def get_image(self, name_or_id, filters=None):
         """Get an image by name or ID.
@@ -1509,6 +1701,46 @@ class OpenStackCloud(object):
 
         """
         return _utils._get_entity(self.search_images, name_or_id, filters)
+
+    def download_image(self, name_or_id, output_path=None, output_file=None):
+        """Download an image from glance by name or ID
+
+        :param str name_or_id: Name or ID of the image.
+        :param output_path: the output path to write the image to. Either this
+            or output_file must be specified
+        :param output_file: a file object (or file-like object) to write the
+            image data to. Only write() will be called on this object. Either
+            this or output_path must be specified
+
+        :raises: OpenStackCloudException in the event download_image is called
+            without exactly one of either output_path or output_file
+        :raises: OpenStackCloudResourceNotFound if no images are found matching
+            the name or id provided
+        """
+        if output_path is None and output_file is None:
+            raise OpenStackCloudException('No output specified, an output path'
+                                          ' or file object is necessary to '
+                                          'write the image data to')
+        elif output_path is not None and output_file is not None:
+            raise OpenStackCloudException('Both an output path and file object'
+                                          ' were provided, however only one '
+                                          'can be used at once')
+
+        image = self.search_images(name_or_id)
+        if len(image) == 0:
+            raise OpenStackCloudResourceNotFound(
+                "No images with name or id %s were found" % name_or_id)
+        image_contents = self.glance_client.images.data(image[0]['id'])
+        with _utils.shade_exceptions("Unable to download image"):
+            if output_path:
+                with open(output_path, 'wb') as fd:
+                    for chunk in image_contents:
+                        fd.write(chunk)
+                return
+            elif output_file:
+                for chunk in image_contents:
+                    output_file.write(chunk)
+                return
 
     def get_floating_ip(self, id, filters=None):
         """Get a floating IP by ID
@@ -1580,26 +1812,42 @@ class OpenStackCloud(object):
                 "Unable to delete keypair %s: %s" % (name, e))
         return True
 
-    # TODO(Shrews): This will eventually need to support tenant ID and
-    # provider networks, which are admin-level params.
     def create_network(self, name, shared=False, admin_state_up=True,
-                       external=False):
+                       external=False, provider=None, project_id=None):
         """Create a network.
 
         :param string name: Name of the network being created.
         :param bool shared: Set the network as shared.
         :param bool admin_state_up: Set the network administrative state to up.
         :param bool external: Whether this network is externally accessible.
+        :param dict provider: A dict of network provider options. Example::
+
+           { 'network_type': 'vlan', 'segmentation_id': 'vlan1' }
+        :param string project_id: Specify the project ID this network
+            will be created on (admin-only).
 
         :returns: The network object.
         :raises: OpenStackCloudException on operation error.
         """
-
         network = {
             'name': name,
             'shared': shared,
             'admin_state_up': admin_state_up,
         }
+
+        if project_id is not None:
+            network['tenant_id'] = project_id
+
+        if provider:
+            if not isinstance(provider, dict):
+                raise OpenStackCloudException(
+                    "Parameter 'provider' must be a dict")
+            # Only pass what we know
+            for attr in ('physical_network', 'network_type',
+                         'segmentation_id'):
+                if attr in provider:
+                    arg = "provider:" + attr
+                    network[arg] = provider[attr]
 
         # Do not send 'router:external' unless it is explicitly
         # set since sending it *might* cause "Forbidden" errors in
@@ -1611,6 +1859,10 @@ class OpenStackCloud(object):
                 "Error creating network {0}".format(name)):
             net = self.manager.submitTask(
                 _tasks.NetworkCreate(body=dict({'network': network})))
+
+        # Reset cache so the new network is picked up
+        self._reset_network_caches()
+
         return net['network']
 
     def delete_network(self, name_or_id):
@@ -1631,6 +1883,9 @@ class OpenStackCloud(object):
                 "Error deleting network {0}".format(name_or_id)):
             self.manager.submitTask(
                 _tasks.NetworkDelete(network=network['id']))
+
+        # Reset cache so the deleted network is removed
+        self._reset_network_caches()
 
         return True
 
@@ -1720,9 +1975,12 @@ class OpenStackCloud(object):
 
         if interface_type:
             filtered_ports = []
-            ext_fixed = (router['external_gateway_info']['external_fixed_ips']
-                         if router['external_gateway_info']
-                         else [])
+            if ('external_gateway_info' in router and
+                'external_fixed_ips' in router['external_gateway_info']):
+                ext_fixed = \
+                    router['external_gateway_info']['external_fixed_ips']
+            else:
+                ext_fixed = []
 
             # Compare the subnets (subnet_id, ip_address) on the ports with
             # the subnets making up the router external gateway. Those ports
@@ -1881,11 +2139,30 @@ class OpenStackCloud(object):
             return image.id
         return None
 
-    def create_image_snapshot(self, name, server, **metadata):
+    def create_image_snapshot(
+            self, name, server, wait=False, timeout=3600, **metadata):
         image_id = str(self.manager.submitTask(_tasks.ImageSnapshotCreate(
             image_name=name, server=server, metadata=metadata)))
         self.list_images.invalidate(self)
-        return self.get_image(image_id)
+        image = self.get_image(image_id)
+
+        if not wait:
+            return image
+        return self.wait_for_image(image, timeout=timeout)
+
+    def wait_for_image(self, image, timeout=3600):
+        image_id = image['id']
+        for count in _utils._iterate_timeout(
+                timeout, "Timeout waiting for image to snapshot"):
+            self.list_images.invalidate(self)
+            image = self.get_image(image_id)
+            if not image:
+                continue
+            if image['status'] == 'active':
+                return image
+            elif image['status'] == 'error':
+                raise OpenStackCloudException(
+                    'Image {image} hit error state'.format(image=image_id))
 
     def delete_image(self, name_or_id, wait=False, timeout=3600):
         image = self.get_image(name_or_id)
@@ -1909,12 +2186,76 @@ class OpenStackCloud(object):
                 if self.get_image(image.id) is None:
                     return
 
+    def _get_name_and_filename(self, name):
+        # See if name points to an existing file
+        if os.path.exists(name):
+            # Neat. Easy enough
+            return (os.path.splitext(os.path.basename(name))[0], name)
+
+        # Try appending the disk format
+        name_with_ext = '.'.join((
+            name, self.cloud_config.config['image_format']))
+        if os.path.exists(name_with_ext):
+            return (os.path.basename(name), name_with_ext)
+
+        raise OpenStackCloudException(
+            'No filename parameter was given to create_image,'
+            ' and {name} was not the path to an existing file.'
+            ' Please provide either a path to an existing file'
+            ' or a name and a filename'.format(name=name))
+
     def create_image(
-            self, name, filename, container='images',
+            self, name, filename=None, container='images',
             md5=None, sha256=None,
             disk_format=None, container_format=None,
             disable_vendor_agent=True,
             wait=False, timeout=3600, **kwargs):
+        """Upload an image to Glance.
+
+        :param str name: Name of the image to create. If it is a pathname
+                         of an image, the name will be constructed from the
+                         extensionless basename of the path.
+        :param str filename: The path to the file to upload, if needed.
+                             (optional, defaults to None)
+        :param str container: Name of the container in swift where images
+                              should be uploaded for import if the cloud
+                              requires such a thing. (optiona, defaults to
+                              'images')
+        :param str md5: md5 sum of the image file. If not given, an md5 will
+                        be calculated.
+        :param str sha256: sha256 sum of the image file. If not given, an md5
+                           will be calculated.
+        :param str disk_format: The disk format the image is in. (optional,
+                                defaults to the os-client-config config value
+                                for this cloud)
+        :param str container_format: The container format the image is in.
+                                     (optional, defaults to the
+                                     os-client-config config value for this
+                                     cloud)
+        :param bool disable_vendor_agent: Whether or not to append metadata
+                                          flags to the image to inform the
+                                          cloud in question to not expect a
+                                          vendor agent to be runing.
+                                          (optional, defaults to True)
+        :param bool wait: If true, waits for image to be created. Defaults to
+                          true - however, be aware that one of the upload
+                          methods is always synchronous.
+        :param timeout: Seconds to wait for image creation. None is forever.
+
+        Additional kwargs will be passed to the image creation as additional
+        metadata for the image.
+
+        :returns: A ``munch.Munch`` of the Image object
+
+        :raises: OpenStackCloudException if there are problems uploading
+        """
+
+        if not disk_format:
+            disk_format = self.cloud_config.config['image_format']
+
+        # If there is no filename, see if name is actually the filename
+        if not filename:
+            name, filename = self._get_name_and_filename(name)
 
         if not disk_format:
             disk_format = self.cloud_config.config['image_format']
@@ -2006,8 +2347,13 @@ class OpenStackCloud(object):
     def _upload_image_task(
             self, name, filename, container, current_image,
             wait, timeout, **image_properties):
+
+        # get new client sessions
         with self._swift_client_lock:
             self._swift_client = None
+        with self._swift_service_lock:
+            self._swift_service = None
+
         self.create_object(
             container, name, filename,
             md5=image_properties.get('md5', None),
@@ -2185,8 +2531,14 @@ class OpenStackCloud(object):
             return False
 
         with _utils.shade_exceptions("Error in deleting volume"):
-            self.manager.submitTask(
-                _tasks.VolumeDelete(volume=volume['id']))
+            try:
+                self.manager.submitTask(
+                    _tasks.VolumeDelete(volume=volume['id']))
+            except cinder_exceptions.NotFound:
+                self.log.debug(
+                    "Volume {id} not found when deleting. Ignoring.".format(
+                        id=volume['id']))
+                return False
 
         self.list_volumes.invalidate(self)
         if wait:
@@ -2326,6 +2678,7 @@ class OpenStackCloud(object):
                     timeout,
                     "Timeout waiting for volume %s to attach." % volume['id']):
                 try:
+                    self.list_volumes.invalidate(self)
                     vol = self.get_volume(volume['id'])
                 except Exception:
                     self.log.debug(
@@ -2560,7 +2913,7 @@ class OpenStackCloud(object):
         Return a list of available floating IPs or allocate a new one and
         return it in a list of 1 element.
 
-        :param network: Nova pool name or Neutron network name or id.
+        :param network: A single Neutron network name or id, or a list of them.
         :param server: (server) Server the Floating IP is for
 
         :returns: a list of floating IP addresses.
@@ -2574,17 +2927,39 @@ class OpenStackCloud(object):
             project_id = self.keystone_session.get_project_id()
 
         with _utils.neutron_exceptions("unable to get available floating IPs"):
-            networks = self.get_external_networks()
-            if not networks:
-                raise OpenStackCloudResourceNotFound(
-                    "unable to find an external network")
+            if network:
+                if isinstance(network, six.string_types):
+                    network = [network]
+
+                # Use given list to get first matching external network
+                floating_network_id = None
+                for net in network:
+                    for ext_net in self.get_external_networks():
+                        if net in (ext_net['name'], ext_net['id']):
+                            floating_network_id = ext_net['id']
+                            break
+                    if floating_network_id:
+                        break
+
+                if floating_network_id is None:
+                    raise OpenStackCloudResourceNotFound(
+                        "unable to find external network {net}".format(
+                            net=network)
+                    )
+            else:
+                # Get first existing external network
+                networks = self.get_external_networks()
+                if not networks:
+                    raise OpenStackCloudResourceNotFound(
+                        "unable to find an external network")
+                floating_network_id = networks[0]['id']
 
             filters = {
                 'port_id': None,
-                'floating_network_id': networks[0]['id'],
+                'floating_network_id': floating_network_id,
                 'tenant_id': project_id
-
             }
+
             floating_ips = self._neutron_list_floating_ips()
             available_ips = _utils._filter_list(
                 floating_ips, name_or_id=None, filters=filters)
@@ -2594,7 +2969,7 @@ class OpenStackCloud(object):
             # No available IP found or we didn't try
             # allocate a new Floating IP
             f_ip = self._neutron_create_floating_ip(
-                network_name_or_id=networks[0]['id'], server=server)
+                network_name_or_id=floating_network_id, server=server)
 
             return [f_ip]
 
@@ -2815,20 +3190,30 @@ class OpenStackCloud(object):
         return server
 
     def _get_free_fixed_port(self, server, fixed_address=None):
-        ports = self.search_ports(filters={'device_id': server['id']})
+        # If we are caching port lists, we may not find the port for
+        # our server if the list is old.  Try for at least 2 cache
+        # periods if that is the case.
+        if self._PORT_AGE:
+            timeout = self._PORT_AGE * 2
+        else:
+            timeout = None
+        for count in _utils._iterate_timeout(
+                timeout,
+                "Timeout waiting for port to show up in list",
+                wait=self._PORT_AGE):
+            try:
+                ports = self.search_ports(filters={'device_id': server['id']})
+                break
+            except OpenStackCloudTimeout:
+                ports = None
         if not ports:
             return (None, None)
         port = None
         if not fixed_address:
-            if len(ports) > 1:
-                raise OpenStackCloudException(
-                    "More than one port was found for server {server}"
-                    " and no fixed_address was specified. It is not"
-                    " possible to infer correct behavior. Please specify"
-                    " a fixed_address - or file a bug in shade describing"
-                    " how you think this should work.")
             # We're assuming one, because we have no idea what to do with
             # more than one.
+            # TODO(mordred) Fix this for real by allowing a configurable
+            #               NAT destination setting
             port = ports[0]
             # Select the first available IPv4 address
             for address in port.get('fixed_ips', list()):
@@ -3244,7 +3629,7 @@ class OpenStackCloud(object):
                 raise OpenStackCloudException(
                     'nics parameter to create_server takes a list of dicts.'
                     ' Got: {nics}'.format(nics=kwargs['nics']))
-        if network and 'nics' not in kwargs:
+        if network and ('nics' not in kwargs or not kwargs['nics']):
             network_obj = self.get_network(name_or_id=network)
             if not network_obj:
                 raise OpenStackCloudException(
@@ -3266,7 +3651,7 @@ class OpenStackCloud(object):
         with _utils.shade_exceptions("Error in creating instance"):
             server = self.manager.submitTask(_tasks.ServerCreate(
                 name=name, flavor=flavor, **kwargs))
-            server_id = server.id
+            admin_pass = server.get('adminPass') or kwargs.get('admin_pass')
             if not wait:
                 # This is a direct get task call to skip the list_servers
                 # cache which has absolutely no chance of containing the
@@ -3280,28 +3665,54 @@ class OpenStackCloud(object):
                 if server.status == 'ERROR':
                     raise OpenStackCloudException(
                         "Error in creating the server.")
-        if wait:
-            # There is no point in iterating faster than the list_servers cache
-            for count in _utils._iterate_timeout(
-                    timeout,
-                    "Timeout waiting for the server to come up.",
-                    wait=self._SERVER_LIST_AGE):
-                try:
-                    # Use the get_server call so that the list_servers
-                    # cache can be leveraged
-                    server = self.get_server(server_id)
-                except Exception:
-                    continue
-                if not server:
-                    continue
 
-                server = self.get_active_server(
-                    server=server, reuse=reuse_ips,
-                    auto_ip=auto_ip, ips=ips, ip_pool=ip_pool,
-                    wait=wait, timeout=timeout)
-                if server:
-                    return server
+        if wait:
+            server = self.wait_for_server(
+                server, auto_ip=auto_ip, ips=ips, ip_pool=ip_pool,
+                reuse=reuse_ips, timeout=timeout
+            )
+
+        server.adminPass = admin_pass
         return server
+
+    def wait_for_server(
+            self, server, auto_ip=True, ips=None, ip_pool=None,
+            reuse=True, timeout=180):
+        """
+        Wait for a server to reach ACTIVE status.
+        """
+        server_id = server['id']
+        timeout_message = "Timeout waiting for the server to come up."
+        start_time = time.time()
+
+        # There is no point in iterating faster than the list_servers cache
+        for count in _utils._iterate_timeout(
+                timeout,
+                timeout_message,
+                wait=self._SERVER_AGE):
+            try:
+                # Use the get_server call so that the list_servers
+                # cache can be leveraged
+                server = self.get_server(server_id)
+            except Exception:
+                continue
+            if not server:
+                continue
+
+            # We have more work to do, but the details of that are
+            # hidden from the user. So, calculate remaining timeout
+            # and pass it down into the IP stack.
+            remaining_timeout = timeout - int(time.time() - start_time)
+            if remaining_timeout <= 0:
+                raise OpenStackCloudTimeout(timeout_message)
+
+            server = self.get_active_server(
+                server=server, reuse=reuse,
+                auto_ip=auto_ip, ips=ips, ip_pool=ip_pool,
+                wait=True, timeout=remaining_timeout)
+
+            if server is not None and server['status'] == 'ACTIVE':
+                return server
 
     def get_active_server(
             self, server, auto_ip=True, ips=None, ip_pool=None,
@@ -3320,7 +3731,8 @@ class OpenStackCloud(object):
         if server['status'] == 'ACTIVE':
             if 'addresses' in server and server['addresses']:
                 return self.add_ips_to_server(
-                    server, auto_ip, ips, ip_pool, reuse=reuse, wait=wait)
+                    server, auto_ip, ips, ip_pool, reuse=reuse,
+                    wait=wait, timeout=timeout)
 
             self.log.debug(
                 'Server {server} reached ACTIVE state without'
@@ -3341,11 +3753,13 @@ class OpenStackCloud(object):
                 extra_data=dict(server=server))
         return None
 
-    def rebuild_server(self, server_id, image_id, wait=False, timeout=180):
+    def rebuild_server(self, server_id, image_id, admin_pass=None,
+                       wait=False, timeout=180):
         with _utils.shade_exceptions("Error in rebuilding instance"):
             server = self.manager.submitTask(_tasks.ServerRebuild(
-                server=server_id, image=image_id))
+                server=server_id, image=image_id, password=admin_pass))
         if wait:
+            admin_pass = server.get('adminPass') or admin_pass
             for count in _utils._iterate_timeout(
                     timeout,
                     "Timeout waiting for server {0} to "
@@ -3356,6 +3770,7 @@ class OpenStackCloud(object):
                     continue
 
                 if server['status'] == 'ACTIVE':
+                    server.adminPass = admin_pass
                     return server
 
                 if server['status'] == 'ERROR':
@@ -3399,7 +3814,7 @@ class OpenStackCloud(object):
                 ips = self.search_floating_ips(filters={
                     'floating_ip_address': floating_ip})
                 if len(ips) != 1:
-                    raise OpenStackException(
+                    raise OpenStackCloudException(
                         "Tried to delete floating ip {floating_ip}"
                         " associated with server {id} but there was"
                         " an error finding it. Something is exceptionally"
@@ -3424,7 +3839,8 @@ class OpenStackCloud(object):
 
         for count in _utils._iterate_timeout(
                 timeout,
-                "Timed out waiting for server to get deleted."):
+                "Timed out waiting for server to get deleted.",
+                wait=self._SERVER_AGE):
             try:
                 server = self.get_server_by_id(server['id'])
                 if not server:
@@ -3444,6 +3860,9 @@ class OpenStackCloud(object):
                     or self.get_volume(server)):
                 self.list_volumes.invalidate(self)
 
+        # Reset the list servers cache time so that the next list server
+        # call gets a new list
+        self._servers_time = self._servers_time - self._SERVER_AGE
         return True
 
     def list_containers(self, full_listing=True):
@@ -3526,6 +3945,8 @@ class OpenStackCloud(object):
 
     def _get_file_hashes(self, filename):
         if filename not in self._file_hash_cache:
+            self.log.debug(
+                'Calculating hashes for {filename}'.format(filename=filename))
             md5 = hashlib.md5()
             sha256 = hashlib.sha256()
             with open(filename, 'rb') as file_obj:
@@ -3534,6 +3955,11 @@ class OpenStackCloud(object):
                     sha256.update(chunk)
             self._file_hash_cache[filename] = dict(
                 md5=md5.hexdigest(), sha256=sha256.hexdigest())
+            self.log.debug(
+                "Image file {filename} md5:{md5} sha256:{sha256}".format(
+                    filename=filename,
+                    md5=self._file_hash_cache[filename]['md5'],
+                    sha256=self._file_hash_cache[filename]['sha256']))
         return (self._file_hash_cache[filename]['md5'],
                 self._file_hash_cache[filename]['sha256'])
 
@@ -3686,9 +4112,35 @@ class OpenStackCloud(object):
                 "Object metadata fetch failed: %s (%s/%s)" % (
                     e.http_reason, e.http_host, e.http_path))
 
+    def get_object(self, container, obj, query_string=None,
+                   resp_chunk_size=None):
+        """Get the headers and body of an object from swift
+
+        :param string container: name of the container.
+        :param string obj: name of the object.
+        :param string query_string: query args for uri.
+                                    (delimiter, prefix, etc.)
+        :param int resp_chunk_size: chunk size of data to read.
+
+        :returns: Tuple (headers, body) of the object, or None if the object
+                  is not found (404)
+        :raises: OpenStackCloudException on operation error.
+        """
+        try:
+            return self.manager.submitTask(_tasks.ObjectGet(
+                container=container, obj=obj, query_string=query_string,
+                resp_chunk_size=resp_chunk_size))
+        except swift_exceptions.ClientException as e:
+            if e.http_status == 404:
+                return None
+            raise OpenStackCloudException(
+                "Object fetch failed: %s (%s/%s)" % (
+                    e.http_reason, e.http_host, e.http_path))
+
     def create_subnet(self, network_name_or_id, cidr, ip_version=4,
                       enable_dhcp=False, subnet_name=None, tenant_id=None,
-                      allocation_pools=None, gateway_ip=None,
+                      allocation_pools=None,
+                      gateway_ip=None, disable_gateway_ip=False,
                       dns_nameservers=None, host_routes=None,
                       ipv6_ra_mode=None, ipv6_address_mode=None):
         """Create a subnet on a specified network.
@@ -3723,6 +4175,10 @@ class OpenStackCloud(object):
            The gateway IP address. When you specify both allocation_pools and
            gateway_ip, you must ensure that the gateway IP does not overlap
            with the specified allocation pools.
+        :param bool disable_gateway_ip:
+           Set to ``True`` if gateway IP address is disabled and ``False`` if
+           enabled. It is not allowed with gateway_ip.
+           Default is ``False``.
         :param list dns_nameservers:
            A list of DNS name servers for the subnet. For example::
 
@@ -3758,6 +4214,10 @@ class OpenStackCloud(object):
             raise OpenStackCloudException(
                 "Network %s not found." % network_name_or_id)
 
+        if disable_gateway_ip and gateway_ip:
+            raise OpenStackCloudException(
+                'arg:disable_gateway_ip is not allowed with arg:gateway_ip')
+
         # The body of the neutron message for the subnet we wish to create.
         # This includes attributes that are required or have defaults.
         subnet = {
@@ -3776,6 +4236,8 @@ class OpenStackCloud(object):
             subnet['allocation_pools'] = allocation_pools
         if gateway_ip:
             subnet['gateway_ip'] = gateway_ip
+        if disable_gateway_ip:
+            subnet['gateway_ip'] = None
         if dns_nameservers:
             subnet['dns_nameservers'] = dns_nameservers
         if host_routes:
@@ -3818,8 +4280,9 @@ class OpenStackCloud(object):
         return True
 
     def update_subnet(self, name_or_id, subnet_name=None, enable_dhcp=None,
-                      gateway_ip=None, allocation_pools=None,
-                      dns_nameservers=None, host_routes=None):
+                      gateway_ip=None, disable_gateway_ip=None,
+                      allocation_pools=None, dns_nameservers=None,
+                      host_routes=None):
         """Update an existing subnet.
 
         :param string name_or_id:
@@ -3832,6 +4295,10 @@ class OpenStackCloud(object):
            The gateway IP address. When you specify both allocation_pools and
            gateway_ip, you must ensure that the gateway IP does not overlap
            with the specified allocation pools.
+        :param bool disable_gateway_ip:
+           Set to ``True`` if gateway IP address is disabled and ``False`` if
+           enabled. It is not allowed with gateway_ip.
+           Default is ``False``.
         :param list allocation_pools:
            A list of dictionaries of the start and end addresses for the
            allocation pools. For example::
@@ -3872,6 +4339,8 @@ class OpenStackCloud(object):
             subnet['enable_dhcp'] = enable_dhcp
         if gateway_ip:
             subnet['gateway_ip'] = gateway_ip
+        if disable_gateway_ip:
+            subnet['gateway_ip'] = None
         if allocation_pools:
             subnet['allocation_pools'] = allocation_pools
         if dns_nameservers:
@@ -3882,6 +4351,10 @@ class OpenStackCloud(object):
         if not subnet:
             self.log.debug("No subnet data to update")
             return
+
+        if disable_gateway_ip and gateway_ip:
+            raise OpenStackCloudException(
+                'arg:disable_gateway_ip is not allowed with arg:gateway_ip')
 
         curr_subnet = self.get_subnet(name_or_id)
         if not curr_subnet:

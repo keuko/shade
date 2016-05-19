@@ -16,7 +16,10 @@
 import mock
 import os_client_config
 
+from os_client_config import exceptions as occ_exc
+
 from shade import _utils
+from shade import exc
 from shade import inventory
 from shade import meta
 from shade.tests import fakes
@@ -44,6 +47,38 @@ class TestInventory(base.TestCase):
 
     @mock.patch("os_client_config.config.OpenStackConfig")
     @mock.patch("shade.OpenStackCloud")
+    def test__init_one_cloud(self, mock_cloud, mock_config):
+        mock_config.return_value.get_one_cloud.return_value = [{}]
+
+        inv = inventory.OpenStackInventory(cloud='supercloud')
+
+        mock_config.assert_called_once_with(
+            config_files=os_client_config.config.CONFIG_FILES
+        )
+        self.assertIsInstance(inv.clouds, list)
+        self.assertEqual(1, len(inv.clouds))
+        self.assertFalse(mock_config.return_value.get_all_clouds.called)
+        mock_config.return_value.get_one_cloud.assert_called_once_with(
+            'supercloud')
+
+    @mock.patch("os_client_config.config.OpenStackConfig")
+    @mock.patch("shade.OpenStackCloud")
+    def test__raise_exception_on_no_cloud(self, mock_cloud, mock_config):
+        """
+        Test that when os-client-config can't find a named cloud, a
+        shade exception is emitted.
+        """
+        mock_config.return_value.get_one_cloud.side_effect = (
+            occ_exc.OpenStackConfigException()
+        )
+        self.assertRaises(exc.OpenStackCloudException,
+                          inventory.OpenStackInventory,
+                          cloud='supercloud')
+        mock_config.return_value.get_one_cloud.assert_called_once_with(
+            'supercloud')
+
+    @mock.patch("os_client_config.config.OpenStackConfig")
+    @mock.patch("shade.OpenStackCloud")
     def test_list_hosts(self, mock_cloud, mock_config):
         mock_config.return_value.get_all_clouds.return_value = [{}]
 
@@ -57,14 +92,13 @@ class TestInventory(base.TestCase):
 
         ret = inv.list_hosts()
 
-        inv.clouds[0].list_servers.assert_called_once_with()
-        inv.clouds[0].get_openstack_vars.assert_called_once_with(server)
+        inv.clouds[0].list_servers.assert_called_once_with(detailed=True)
+        self.assertFalse(inv.clouds[0].get_openstack_vars.called)
         self.assertEqual([server], ret)
 
     @mock.patch("os_client_config.config.OpenStackConfig")
-    @mock.patch("shade.meta.add_server_interfaces")
     @mock.patch("shade.OpenStackCloud")
-    def test_list_hosts_no_detail(self, mock_cloud, mock_add, mock_config):
+    def test_list_hosts_no_detail(self, mock_cloud, mock_config):
         mock_config.return_value.get_all_clouds.return_value = [{}]
 
         inv = inventory.OpenStackInventory()
@@ -79,9 +113,8 @@ class TestInventory(base.TestCase):
 
         inv.list_hosts(expand=False)
 
-        inv.clouds[0].list_servers.assert_called_once_with()
+        inv.clouds[0].list_servers.assert_called_once_with(detailed=False)
         self.assertFalse(inv.clouds[0].get_openstack_vars.called)
-        mock_add.assert_called_once_with(inv.clouds[0], server)
 
     @mock.patch("os_client_config.config.OpenStackConfig")
     @mock.patch("shade.OpenStackCloud")

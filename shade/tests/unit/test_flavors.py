@@ -37,10 +37,14 @@ class TestFlavors(base.TestCase):
             is_public=True
         )
 
+    @mock.patch.object(shade.OpenStackCloud, '_compute_client')
     @mock.patch.object(shade.OpenStackCloud, 'nova_client')
-    def test_delete_flavor(self, mock_nova):
+    def test_delete_flavor(self, mock_nova, mock_compute):
+        mock_response = mock.Mock()
+        mock_response.json.return_value = dict(extra_specs=[])
+        mock_compute.get.return_value = mock_response
         mock_nova.flavors.list.return_value = [
-            fakes.FakeFlavor('123', 'lemon')
+            fakes.FakeFlavor('123', 'lemon', 100)
         ]
         self.assertTrue(self.op_cloud.delete_flavor('lemon'))
         mock_nova.flavors.delete.assert_called_once_with(flavor='123')
@@ -54,7 +58,7 @@ class TestFlavors(base.TestCase):
     @mock.patch.object(shade.OpenStackCloud, 'nova_client')
     def test_delete_flavor_exception(self, mock_nova):
         mock_nova.flavors.list.return_value = [
-            fakes.FakeFlavor('123', 'lemon')
+            fakes.FakeFlavor('123', 'lemon', 100)
         ]
         mock_nova.flavors.delete.side_effect = Exception()
         self.assertRaises(shade.OpenStackCloudException,
@@ -65,23 +69,25 @@ class TestFlavors(base.TestCase):
         self.op_cloud.list_flavors()
         mock_nova.flavors.list.assert_called_once_with(is_public=None)
 
-    @mock.patch.object(shade.OpenStackCloud, 'nova_client')
-    def test_set_flavor_specs(self, mock_nova):
-        flavor = mock.Mock(id=1, name='orange')
-        mock_nova.flavors.get.return_value = flavor
+    @mock.patch.object(shade.OpenStackCloud, '_compute_client')
+    def test_set_flavor_specs(self, mock_compute):
         extra_specs = dict(key1='value1')
         self.op_cloud.set_flavor_specs(1, extra_specs)
-        mock_nova.flavors.get.assert_called_once_with(flavor=1)
-        flavor.set_keys.assert_called_once_with(extra_specs)
+        mock_compute.post.assert_called_once_with(
+            '/flavors/{id}/os-extra_specs'.format(id=1),
+            json=dict(extra_specs=extra_specs))
 
-    @mock.patch.object(shade.OpenStackCloud, 'nova_client')
-    def test_unset_flavor_specs(self, mock_nova):
-        flavor = mock.Mock(id=1, name='orange')
-        mock_nova.flavors.get.return_value = flavor
+    @mock.patch.object(shade.OpenStackCloud, '_compute_client')
+    def test_unset_flavor_specs(self, mock_compute):
         keys = ['key1', 'key2']
         self.op_cloud.unset_flavor_specs(1, keys)
-        mock_nova.flavors.get.assert_called_once_with(flavor=1)
-        flavor.unset_keys.assert_called_once_with(keys)
+        api_spec = '/flavors/{id}/os-extra_specs/{key}'
+        self.assertEqual(
+            mock_compute.delete.call_args_list[0],
+            mock.call(api_spec.format(id=1, key='key1')))
+        self.assertEqual(
+            mock_compute.delete.call_args_list[1],
+            mock.call(api_spec.format(id=1, key='key2')))
 
     @mock.patch.object(shade.OpenStackCloud, 'nova_client')
     def test_add_flavor_access(self, mock_nova):

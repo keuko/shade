@@ -13,10 +13,11 @@
 # under the License.
 import tempfile
 
+from glanceclient.v2 import shell
 import mock
 import os_client_config as occ
 import testtools
-import yaml
+import warlock
 
 import shade.openstackcloud
 from shade import _utils
@@ -26,9 +27,77 @@ from shade.tests import fakes
 from shade.tests.unit import base
 
 
+# Mock out the gettext function so that the task schema can be copypasta
+def _(msg):
+    return msg
+
+
+_TASK_PROPERTIES = {
+    "id": {
+        "description": _("An identifier for the task"),
+        "pattern": _('^([0-9a-fA-F]){8}-([0-9a-fA-F]){4}-([0-9a-fA-F]){4}'
+                     '-([0-9a-fA-F]){4}-([0-9a-fA-F]){12}$'),
+        "type": "string"
+    },
+    "type": {
+        "description": _("The type of task represented by this content"),
+        "enum": [
+            "import",
+        ],
+        "type": "string"
+    },
+    "status": {
+        "description": _("The current status of this task"),
+        "enum": [
+            "pending",
+            "processing",
+            "success",
+            "failure"
+        ],
+        "type": "string"
+    },
+    "input": {
+        "description": _("The parameters required by task, JSON blob"),
+        "type": ["null", "object"],
+    },
+    "result": {
+        "description": _("The result of current task, JSON blob"),
+        "type": ["null", "object"],
+    },
+    "owner": {
+        "description": _("An identifier for the owner of this task"),
+        "type": "string"
+    },
+    "message": {
+        "description": _("Human-readable informative message only included"
+                         " when appropriate (usually on failure)"),
+        "type": "string",
+    },
+    "expires_at": {
+        "description": _("Datetime when this resource would be"
+                         " subject to removal"),
+        "type": ["null", "string"]
+    },
+    "created_at": {
+        "description": _("Datetime when this resource was created"),
+        "type": "string"
+    },
+    "updated_at": {
+        "description": _("Datetime when this resource was updated"),
+        "type": "string"
+    },
+    'self': {'type': 'string'},
+    'schema': {'type': 'string'}
+}
+_TASK_SCHEMA = dict(
+    name='Task', properties=_TASK_PROPERTIES,
+    additionalProperties=False,
+)
+
+
 class TestMemoryCache(base.TestCase):
 
-    CACHING_CONFIG = {
+    CLOUD_CONFIG = {
         'cache':
         {
             'max_age': 90,
@@ -39,7 +108,7 @@ class TestMemoryCache(base.TestCase):
         },
         'clouds':
         {
-            '_cache_test_':
+            '_test_cloud_':
             {
                 'auth':
                 {
@@ -52,22 +121,6 @@ class TestMemoryCache(base.TestCase):
             },
         },
     }
-
-    def setUp(self):
-        super(TestMemoryCache, self).setUp()
-
-        # Isolate os-client-config from test environment
-        config = tempfile.NamedTemporaryFile(delete=False)
-        config.write(bytes(yaml.dump(self.CACHING_CONFIG).encode('utf-8')))
-        config.close()
-        vendor = tempfile.NamedTemporaryFile(delete=False)
-        vendor.write(b'{}')
-        vendor.close()
-
-        self.cloud_config = occ.OpenStackConfig(config_files=[config.name],
-                                                vendor_files=[vendor.name])
-        self.cloud = shade.openstack_cloud(cloud='_cache_test_',
-                                           config=self.cloud_config)
 
     def test_openstack_cloud(self):
         self.assertIsInstance(self.cloud, shade.OpenStackCloud)
@@ -245,13 +298,23 @@ class TestMemoryCache(base.TestCase):
         self.assertEqual([], self.cloud.list_users())
         self.assertTrue(keystone_mock.users.delete.was_called)
 
+    @mock.patch.object(shade.OpenStackCloud, '_compute_client')
     @mock.patch.object(shade.OpenStackCloud, 'nova_client')
-    def test_list_flavors(self, nova_mock):
+    def test_list_flavors(self, nova_mock, mock_compute):
         nova_mock.flavors.list.return_value = []
+        nova_mock.flavors.api.client.get.return_value = {}
+        mock_response = mock.Mock()
+        mock_response.json.return_value = dict(extra_specs={})
+        mock_response.headers.get.return_value = 'request-id'
+        mock_compute.get.return_value = mock_response
         self.assertEqual([], self.cloud.list_flavors())
 
-        fake_flavor = fakes.FakeFlavor('555', 'vanilla')
-        fake_flavor_dict = meta.obj_to_dict(fake_flavor)
+        fake_flavor = fakes.FakeFlavor(
+            '555', 'vanilla', 100, dict(
+                x_openstack_request_ids=['request-id']))
+        fake_flavor_dict = _utils.normalize_flavors(
+            [meta.obj_to_dict(fake_flavor)]
+        )[0]
         nova_mock.flavors.list.return_value = [fake_flavor]
         self.cloud.list_flavors.invalidate(self.cloud)
         self.assertEqual([fake_flavor_dict], self.cloud.list_flavors())
@@ -388,32 +451,24 @@ class TestMemoryCache(base.TestCase):
         fake_sha256 = "fake-sha256"
         get_file_hashes.return_value = (fake_md5, fake_sha256)
 
-        # V2's warlock objects just work like dicts
-        class FakeImage(dict):
-            status = 'CREATED'
-            id = '99'
-            name = '99 name'
-
-        fake_image = FakeImage()
-        fake_image.update({
-            'id': '99',
-            'name': '99 name',
-            shade.openstackcloud.IMAGE_MD5_KEY: fake_md5,
-            shade.openstackcloud.IMAGE_SHA256_KEY: fake_sha256,
-        })
+        FakeImage = warlock.model_factory(shell.get_image_schema())
+        fake_image = FakeImage(
+            id='a35e8afc-cae9-4e38-8441-2cd465f79f7b', name='name-99',
+            status='active', visibility='private')
         glance_mock.images.list.return_value = [fake_image]
 
-        class FakeTask(dict):
-            status = 'success'
-            result = {'image_id': '99'}
-
-        fake_task = FakeTask()
-        fake_task.update({
-            'id': '100',
+        FakeTask = warlock.model_factory(_TASK_SCHEMA)
+        args = {
+            'id': '21FBD9A7-85EC-4E07-9D58-72F1ACF7CB1F',
             'status': 'success',
-        })
+            'type': 'import',
+            'result': {
+                'image_id': 'a35e8afc-cae9-4e38-8441-2cd465f79f7b',
+            },
+        }
+        fake_task = FakeTask(**args)
         glance_mock.tasks.get.return_value = fake_task
-        self._call_create_image(name='99 name',
+        self._call_create_image(name='name-99',
                                 container='image_upload_v2_test_container')
         args = {'header': ['x-object-meta-x-shade-md5:fake-md5',
                            'x-object-meta-x-shade-sha256:fake-sha256'],
@@ -423,42 +478,58 @@ class TestMemoryCache(base.TestCase):
             objects=mock.ANY,
             options=args)
         glance_mock.tasks.create.assert_called_with(type='import', input={
-            'import_from': 'image_upload_v2_test_container/99 name',
-            'image_properties': {'name': '99 name'}})
+            'import_from': 'image_upload_v2_test_container/name-99',
+            'image_properties': {'name': 'name-99'}})
         args = {'owner_specified.shade.md5': fake_md5,
                 'owner_specified.shade.sha256': fake_sha256,
-                'image_id': '99',
-                'visibility': 'private'}
+                'image_id': 'a35e8afc-cae9-4e38-8441-2cd465f79f7b'}
         glance_mock.images.update.assert_called_with(**args)
         fake_image_dict = meta.obj_to_dict(fake_image)
         self.assertEqual([fake_image_dict], self.cloud.list_images())
 
     @mock.patch.object(shade.OpenStackCloud, 'glance_client')
     def test_cache_no_cloud_name(self, glance_mock):
-        class FakeImage(dict):
-            id = 1
+        class FakeImage(object):
             status = 'active'
             name = 'None Test Image'
-        fi = FakeImage(id=FakeImage.id, status=FakeImage.status,
-                       name=FakeImage.name)
+
+            def __init__(self, id):
+                self.id = id
+
+        fi = FakeImage(id=1)
         glance_mock.images.list.return_value = [fi]
         self.cloud.name = None
-        self.assertEqual([fi], [dict(x) for x in self.cloud.list_images()])
+        self.assertEqual(
+            meta.obj_list_to_dict([fi]),
+            self.cloud.list_images())
         # Now test that the list was cached
-        fi2 = FakeImage(id=2, status=FakeImage.status, name=FakeImage.name)
-        fi2.id = 2
+        fi2 = FakeImage(id=2)
         glance_mock.images.list.return_value = [fi, fi2]
-        self.assertEqual([fi], [dict(x) for x in self.cloud.list_images()])
+        self.assertEqual(
+            meta.obj_list_to_dict([fi]),
+            self.cloud.list_images())
         # Invalidation too
         self.cloud.list_images.invalidate(self.cloud)
         self.assertEqual(
-            [fi, fi2], [dict(x) for x in self.cloud.list_images()])
+            meta.obj_list_to_dict([fi, fi2]),
+            self.cloud.list_images())
 
 
 class TestBogusAuth(base.TestCase):
-    CONFIG = {
+    CLOUD_CONFIG = {
         'clouds':
         {
+            '_test_cloud_':
+            {
+                'auth':
+                {
+                    'auth_url': 'http://198.51.100.1:35357/v2.0',
+                    'username': '_test_user_',
+                    'password': '_test_pass_',
+                    'project_name': '_test_project_',
+                },
+                'region_name': '_test_region_',
+            },
             '_bogus_test_':
             {
                 'auth_type': 'bogus',
@@ -477,18 +548,7 @@ class TestBogusAuth(base.TestCase):
     def setUp(self):
         super(TestBogusAuth, self).setUp()
 
-        # Isolate os-client-config from test environment
-        config = tempfile.NamedTemporaryFile(delete=False)
-        config.write(bytes(yaml.dump(self.CONFIG).encode('utf-8')))
-        config.close()
-        vendor = tempfile.NamedTemporaryFile(delete=False)
-        vendor.write(b'{}')
-        vendor.close()
-
-        self.cloud_config = occ.OpenStackConfig(config_files=[config.name],
-                                                vendor_files=[vendor.name])
-
     def test_get_auth_bogus(self):
         with testtools.ExpectedException(exc.OpenStackCloudException):
             shade.openstack_cloud(
-                cloud='_bogus_test_', config=self.cloud_config)
+                cloud='_bogus_test_', config=self.config)
