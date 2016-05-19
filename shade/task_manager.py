@@ -21,6 +21,7 @@ import time
 import types
 
 import keystoneauth1.exceptions
+import simplejson
 import six
 
 from shade import _log
@@ -53,6 +54,7 @@ class Task(object):
         self._finished = threading.Event()
         self.args = kw
         self.requests = False
+        self._request_id = None
 
     @abc.abstractmethod
     def main(self, client):
@@ -70,24 +72,36 @@ class Task(object):
         self._traceback = tb
         self._finished.set()
 
-    def wait(self):
+    def wait(self, raw=False):
         self._finished.wait()
-        # TODO(mordred): We store the raw requests response if there is
-        # one now. So we should probably do an error handler to throw
-        # some exceptions if it's not 200
+
         if self._exception:
             six.reraise(type(self._exception), self._exception,
                         self._traceback)
 
-        if type(self._result) == list:
-            return meta.obj_list_to_dict(self._result)
-        elif type(self._result) not in (bool, int, float, str, set,
-                                        types.GeneratorType):
-            return meta.obj_to_dict(self._result)
+        if raw:
+            # Do NOT convert the result.
+            return self._result
+
+        # NOTE(Shrews): Since the client API might decide to subclass one
+        # of these result types, we use isinstance() here instead of type().
+        if (isinstance(self._result, list) or
+            isinstance(self._result, types.GeneratorType)):
+            return meta.obj_list_to_dict(
+                self._result, request_id=self._request_id)
+        elif (not isinstance(self._result, bool) and
+              not isinstance(self._result, int) and
+              not isinstance(self._result, float) and
+              not isinstance(self._result, str) and
+              not isinstance(self._result, set) and
+              not isinstance(self._result, tuple) and
+              not isinstance(self._result, types.GeneratorType)):
+            return meta.obj_to_dict(self._result, request_id=self._request_id)
         else:
             return self._result
 
     def run(self, client):
+        self._client = client
         try:
             # Retry one time if we get a retriable connection failure
             try:
@@ -101,6 +115,31 @@ class Task(object):
                 raise
         except Exception as e:
             self.exception(e, sys.exc_info()[2])
+
+
+class RequestTask(Task):
+
+    # It's totally legit for calls to not return things
+    result_key = None
+
+    # keystoneauth1 throws keystoneauth1.exceptions.http.HttpError on !200
+    def done(self, result):
+        self._response = result
+
+        try:
+            result_json = self._response.json()
+        except (simplejson.scanner.JSONDecodeError, ValueError) as e:
+            result_json = self._response.text
+            self._client.log.debug(
+                'Could not decode json in response: {e}'.format(e=str(e)))
+            self._client.log.debug(result_json)
+
+        if self.result_key:
+            self._result = result_json[self.result_key]
+        else:
+            self._result = result_json
+        self._request_id = self._response.headers.get('x-openstack-request-id')
+        self._finished.set()
 
 
 class TaskManager(object):
@@ -118,7 +157,13 @@ class TaskManager(object):
         """ This is a direct action passthrough TaskManager """
         pass
 
-    def submitTask(self, task):
+    def submitTask(self, task, raw=False):
+        """Submit and execute the given task.
+
+        :param task: The task to execute.
+        :param bool raw: If True, return the raw result as received from the
+            underlying client call.
+        """
         self.log.debug(
             "Manager %s running task %s" % (self.name, type(task).__name__))
         start = time.time()
@@ -127,4 +172,4 @@ class TaskManager(object):
         self.log.debug(
             "Manager %s ran task %s in %ss" % (
                 self.name, type(task).__name__, (end - start)))
-        return task.wait()
+        return task.wait(raw)

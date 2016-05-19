@@ -24,16 +24,21 @@ from os_client_config import cloud_config
 import shade
 from shade import _utils
 from shade import exc
-from shade import meta
 from shade.tests import fakes
 from shade.tests.unit import base
 
 
-class TestShade(base.TestCase):
+RANGE_DATA = [
+    dict(id=1, key1=1, key2=5),
+    dict(id=2, key1=1, key2=20),
+    dict(id=3, key1=2, key2=10),
+    dict(id=4, key1=2, key2=30),
+    dict(id=5, key1=3, key2=40),
+    dict(id=6, key1=3, key2=40),
+]
 
-    def setUp(self):
-        super(TestShade, self).setUp()
-        self.cloud = shade.openstack_cloud(validate=False)
+
+class TestShade(base.TestCase):
 
     def test_openstack_cloud(self):
         self.assertIsInstance(self.cloud, shade.OpenStackCloud)
@@ -73,35 +78,30 @@ class TestShade(base.TestCase):
                           self.cloud.list_servers)
 
     @mock.patch.object(cloud_config.CloudConfig, 'get_session')
-    @mock.patch.object(glanceclient, 'Client')
-    def test_glance_args(
-            self, mock_client, get_session_mock):
+    @mock.patch.object(cloud_config.CloudConfig, 'get_legacy_client')
+    def test_glance_args(self, get_legacy_client_mock, get_session_mock):
         session_mock = mock.Mock()
         session_mock.get_endpoint.return_value = 'http://example.com/v2'
         get_session_mock.return_value = session_mock
         self.cloud.glance_client
-        mock_client.assert_called_with(
-            2.0,
-            endpoint_override='http://example.com',
-            region_name='', service_name=None,
-            interface='public',
-            service_type='image', session=mock.ANY,
+        get_legacy_client_mock.assert_called_once_with(
+            service_key='image',
+            client_class=glanceclient.Client,
+            interface_key=None,
+            pass_version_arg=True,
         )
 
     @mock.patch.object(cloud_config.CloudConfig, 'get_session')
-    @mock.patch.object(heat_client, 'Client')
-    def test_heat_args(self, mock_client, get_session_mock):
+    @mock.patch.object(cloud_config.CloudConfig, 'get_legacy_client')
+    def test_heat_args(self, get_legacy_client_mock, get_session_mock):
         session_mock = mock.Mock()
         get_session_mock.return_value = session_mock
         self.cloud.heat_client
-        mock_client.assert_called_with(
-            '1',
-            endpoint_override=None,
-            endpoint_type='public',
-            region_name='',
-            service_name=None,
-            service_type='orchestration',
-            session=mock.ANY,
+        get_legacy_client_mock.assert_called_once_with(
+            service_key='orchestration',
+            client_class=heat_client.Client,
+            interface_key=None,
+            pass_version_arg=True,
         )
 
     @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
@@ -247,6 +247,28 @@ class TestShade(base.TestCase):
 
     @mock.patch.object(shade.OpenStackCloud, 'search_ports')
     @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_list_router_interfaces_no_gw(self, mock_client, mock_search):
+        """
+        If a router does not have external_gateway_info, do not fail.
+        """
+        external_port = {'id': 'external_port_id',
+                         'fixed_ips': [
+                             ('external_subnet_id', 'ip_address'),
+                         ]}
+        port_list = [external_port]
+        router = {
+            'id': 'router_id',
+        }
+        mock_search.return_value = port_list
+        ret = self.cloud.list_router_interfaces(router,
+                                                interface_type='external')
+        mock_search.assert_called_once_with(
+            filters={'device_id': router['id']}
+        )
+        self.assertEqual([], ret)
+
+    @mock.patch.object(shade.OpenStackCloud, 'search_ports')
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
     def test_list_router_interfaces_all(self, mock_client, mock_search):
         internal_port = {'id': 'internal_port_id',
                          'fixed_ips': [
@@ -336,6 +358,44 @@ class TestShade(base.TestCase):
                                  host_routes=routes)
         self.assertTrue(mock_client.create_subnet.called)
 
+    @mock.patch.object(shade.OpenStackCloud, 'search_networks')
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_create_subnet_without_gateway_ip(self, mock_client, mock_search):
+        net1 = dict(id='123', name='donald')
+        mock_search.return_value = [net1]
+        pool = [{'start': '192.168.200.2', 'end': '192.168.200.254'}]
+        dns = ['8.8.8.8']
+        self.cloud.create_subnet('kooky', '192.168.200.0/24',
+                                 allocation_pools=pool,
+                                 dns_nameservers=dns,
+                                 disable_gateway_ip=True)
+        self.assertTrue(mock_client.create_subnet.called)
+
+    @mock.patch.object(shade.OpenStackCloud, 'search_networks')
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_create_subnet_with_gateway_ip(self, mock_client, mock_search):
+        net1 = dict(id='123', name='donald')
+        mock_search.return_value = [net1]
+        pool = [{'start': '192.168.200.8', 'end': '192.168.200.254'}]
+        dns = ['8.8.8.8']
+        gateway = '192.168.200.2'
+        self.cloud.create_subnet('kooky', '192.168.200.0/24',
+                                 allocation_pools=pool,
+                                 dns_nameservers=dns,
+                                 gateway_ip=gateway)
+        self.assertTrue(mock_client.create_subnet.called)
+
+    @mock.patch.object(shade.OpenStackCloud, 'search_networks')
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_create_subnet_conflict_gw_ops(self, mock_client, mock_search):
+        net1 = dict(id='123', name='donald')
+        mock_search.return_value = [net1]
+        gateway = '192.168.200.3'
+        self.assertRaises(exc.OpenStackCloudException,
+                          self.cloud.create_subnet, 'kooky',
+                          '192.168.200.0/24', gateway_ip=gateway,
+                          disable_gateway_ip=True)
+
     @mock.patch.object(shade.OpenStackCloud, 'list_networks')
     @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
     def test_create_subnet_bad_network(self, mock_client, mock_list):
@@ -401,49 +461,61 @@ class TestShade(base.TestCase):
         self.cloud.update_subnet('123', subnet_name='goofy')
         self.assertTrue(mock_client.update_subnet.called)
 
+    @mock.patch.object(shade.OpenStackCloud, 'get_subnet')
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_update_subnet_gateway_ip(self, mock_client, mock_get):
+        subnet1 = dict(id='456', name='kooky')
+        mock_get.return_value = subnet1
+        gateway = '192.168.200.3'
+        self.cloud.update_subnet(
+            '456', gateway_ip=gateway)
+        self.assertTrue(mock_client.update_subnet.called)
+
+    @mock.patch.object(shade.OpenStackCloud, 'get_subnet')
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_update_subnet_disable_gateway_ip(self, mock_client, mock_get):
+        subnet1 = dict(id='456', name='kooky')
+        mock_get.return_value = subnet1
+        self.cloud.update_subnet(
+            '456', disable_gateway_ip=True)
+        self.assertTrue(mock_client.update_subnet.called)
+
+    @mock.patch.object(shade.OpenStackCloud, 'get_subnet')
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_update_subnet_conflict_gw_ops(self, mock_client, mock_get):
+        subnet1 = dict(id='456', name='kooky')
+        mock_get.return_value = subnet1
+        gateway = '192.168.200.3'
+        self.assertRaises(exc.OpenStackCloudException,
+                          self.cloud.update_subnet,
+                          '456', gateway_ip=gateway, disable_gateway_ip=True)
+
+    @mock.patch.object(shade.OpenStackCloud, '_compute_client')
     @mock.patch.object(shade.OpenStackCloud, 'nova_client')
-    def test_get_flavor_by_ram(self, mock_nova_client):
-
-        class Flavor1(object):
-            id = '1'
-            name = 'vanilla ice cream'
-            ram = 100
-
-        class Flavor2(object):
-            id = '2'
-            name = 'chocolate ice cream'
-            ram = 200
-
-        vanilla = meta.obj_to_dict(Flavor1())
-        chocolate = meta.obj_to_dict(Flavor2())
+    def test_get_flavor_by_ram(self, mock_nova_client, mock_compute):
+        vanilla = fakes.FakeFlavor('1', 'vanilla ice cream', 100)
+        chocolate = fakes.FakeFlavor('1', 'chocolate ice cream', 200)
         mock_nova_client.flavors.list.return_value = [vanilla, chocolate]
+        mock_response = mock.Mock()
+        mock_response.json.return_value = dict(extra_specs=[])
+        mock_compute.get.return_value = mock_response
         flavor = self.cloud.get_flavor_by_ram(ram=150)
-        self.assertEquals(chocolate, flavor)
+        self.assertEquals(chocolate.id, flavor['id'])
 
+    @mock.patch.object(shade.OpenStackCloud, '_compute_client')
     @mock.patch.object(shade.OpenStackCloud, 'nova_client')
-    def test_get_flavor_by_ram_and_include(self, mock_nova_client):
-        class Flavor1(object):
-            id = '1'
-            name = 'vanilla ice cream'
-            ram = 100
-
-        class Flavor2(object):
-            id = '2'
-            name = 'chocolate ice cream'
-            ram = 200
-
-        class Flavor3(object):
-            id = '3'
-            name = 'strawberry ice cream'
-            ram = 250
-
-        vanilla = meta.obj_to_dict(Flavor1())
-        chocolate = meta.obj_to_dict(Flavor2())
-        strawberry = meta.obj_to_dict(Flavor3())
+    def test_get_flavor_by_ram_and_include(
+            self, mock_nova_client, mock_compute):
+        vanilla = fakes.FakeFlavor('1', 'vanilla ice cream', 100)
+        chocolate = fakes.FakeFlavor('2', 'chocoliate ice cream', 200)
+        strawberry = fakes.FakeFlavor('3', 'strawberry ice cream', 250)
+        mock_response = mock.Mock()
+        mock_response.json.return_value = dict(extra_specs=[])
+        mock_compute.get.return_value = mock_response
         mock_nova_client.flavors.list.return_value = [
             vanilla, chocolate, strawberry]
         flavor = self.cloud.get_flavor_by_ram(ram=150, include='strawberry')
-        self.assertEquals(strawberry, flavor)
+        self.assertEquals(strawberry.id, flavor['id'])
 
     @mock.patch.object(shade.OpenStackCloud, 'nova_client')
     def test_get_flavor_by_ram_not_found(self, mock_nova_client):
@@ -452,19 +524,19 @@ class TestShade(base.TestCase):
                           self.cloud.get_flavor_by_ram,
                           ram=100)
 
+    @mock.patch.object(shade.OpenStackCloud, '_compute_client')
     @mock.patch.object(shade.OpenStackCloud, 'nova_client')
-    def test_get_flavor_string_and_int(self, mock_nova_client):
-        class Flavor1(object):
-            id = '1'
-            name = 'vanilla ice cream'
-            ram = 100
-
-        vanilla = meta.obj_to_dict(Flavor1())
+    def test_get_flavor_string_and_int(
+            self, mock_nova_client, mock_compute):
+        vanilla = fakes.FakeFlavor('1', 'vanilla ice cream', 100)
         mock_nova_client.flavors.list.return_value = [vanilla]
+        mock_response = mock.Mock()
+        mock_response.json.return_value = dict(extra_specs=[])
+        mock_compute.get.return_value = mock_response
         flavor1 = self.cloud.get_flavor('1')
-        self.assertEquals(vanilla, flavor1)
+        self.assertEquals(vanilla.id, flavor1['id'])
         flavor2 = self.cloud.get_flavor(1)
-        self.assertEquals(vanilla, flavor2)
+        self.assertEquals(vanilla.id, flavor2['id'])
 
     def test__neutron_exceptions_resource_not_found(self):
         with mock.patch.object(
@@ -495,18 +567,24 @@ class TestShade(base.TestCase):
                               self.cloud.list_networks)
 
     @mock.patch.object(shade._tasks.ServerList, 'main')
-    def test_list_servers(self, mock_serverlist):
+    @mock.patch('shade.meta.add_server_interfaces')
+    def test_list_servers(self, mock_add_srv_int, mock_serverlist):
         '''This test verifies that calling list_servers results in a call
         to the ServerList task.'''
-        mock_serverlist.return_value = [
-            munch.Munch({'name': 'testserver',
-                         'id': '1',
-                         'flavor': {},
-                         'image': ''})
-        ]
+        server_obj = munch.Munch({'name': 'testserver',
+                                  'id': '1',
+                                  'flavor': {},
+                                  'addresses': {},
+                                  'accessIPv4': '',
+                                  'accessIPv6': '',
+                                  'image': ''})
+        mock_serverlist.return_value = [server_obj]
+        mock_add_srv_int.side_effect = [server_obj]
 
         r = self.cloud.list_servers()
+
         self.assertEquals(1, len(r))
+        self.assertEquals(1, mock_add_srv_int.call_count)
         self.assertEquals('testserver', r[0]['name'])
 
     @mock.patch.object(shade._tasks.ServerList, 'main')
@@ -567,8 +645,8 @@ class TestShade(base.TestCase):
                 pass
         mock_sleep.assert_called_with(1.0)
 
-    @mock.patch.object(shade.OpenStackCloud, 'nova_client')
-    def test__nova_extensions(self, mock_nova):
+    @mock.patch.object(shade.OpenStackCloud, '_compute_client')
+    def test__nova_extensions(self, mock_compute):
         body = {
             'extensions': [
                 {
@@ -589,22 +667,24 @@ class TestShade(base.TestCase):
                 },
             ]
         }
-        mock_nova.client.get.return_value = ('200', body)
+        mock_response = mock.Mock()
+        mock_response.json.return_value = body
+        mock_compute.get.return_value = mock_response
         extensions = self.cloud._nova_extensions()
-        mock_nova.client.get.assert_called_once_with(url='/extensions')
+        mock_compute.get.assert_called_once_with('/extensions')
         self.assertEqual(set(['NMN', 'OS-DCF']), extensions)
 
-    @mock.patch.object(shade.OpenStackCloud, 'nova_client')
-    def test__nova_extensions_fails(self, mock_nova):
-        mock_nova.client.get.side_effect = Exception()
+    @mock.patch.object(shade.OpenStackCloud, '_compute_client')
+    def test__nova_extensions_fails(self, mock_compute):
+        mock_compute.get.side_effect = Exception()
         with testtools.ExpectedException(
             exc.OpenStackCloudException,
             "Error fetching extension list for nova"
         ):
             self.cloud._nova_extensions()
 
-    @mock.patch.object(shade.OpenStackCloud, 'nova_client')
-    def test__has_nova_extension(self, mock_nova):
+    @mock.patch.object(shade.OpenStackCloud, '_compute_client')
+    def test__has_nova_extension(self, mock_compute):
         body = {
             'extensions': [
                 {
@@ -625,6 +705,41 @@ class TestShade(base.TestCase):
                 },
             ]
         }
-        mock_nova.client.get.return_value = ('200', body)
+        mock_response = mock.Mock()
+        mock_response.json.return_value = body
+        mock_compute.get.return_value = mock_response
         self.assertTrue(self.cloud._has_nova_extension('NMN'))
         self.assertFalse(self.cloud._has_nova_extension('invalid'))
+
+    def test_range_search(self):
+        filters = {"key1": "min", "key2": "20"}
+        retval = self.cloud.range_search(RANGE_DATA, filters)
+        self.assertIsInstance(retval, list)
+        self.assertEqual(1, len(retval))
+        self.assertEqual([RANGE_DATA[1]], retval)
+
+    def test_range_search_2(self):
+        filters = {"key1": "<=2", "key2": ">10"}
+        retval = self.cloud.range_search(RANGE_DATA, filters)
+        self.assertIsInstance(retval, list)
+        self.assertEqual(2, len(retval))
+        self.assertEqual([RANGE_DATA[1], RANGE_DATA[3]], retval)
+
+    def test_range_search_3(self):
+        filters = {"key1": "2", "key2": "min"}
+        retval = self.cloud.range_search(RANGE_DATA, filters)
+        self.assertIsInstance(retval, list)
+        self.assertEqual(0, len(retval))
+
+    def test_range_search_4(self):
+        filters = {"key1": "max", "key2": "min"}
+        retval = self.cloud.range_search(RANGE_DATA, filters)
+        self.assertIsInstance(retval, list)
+        self.assertEqual(0, len(retval))
+
+    def test_range_search_5(self):
+        filters = {"key1": "min", "key2": "min"}
+        retval = self.cloud.range_search(RANGE_DATA, filters)
+        self.assertIsInstance(retval, list)
+        self.assertEqual(1, len(retval))
+        self.assertEqual([RANGE_DATA[0]], retval)

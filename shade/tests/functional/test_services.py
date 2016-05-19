@@ -24,18 +24,17 @@ Functional tests for `shade` service resource.
 import string
 import random
 
-from shade import operator_cloud
 from shade.exc import OpenStackCloudException
-from shade.tests import base
+from shade.exc import OpenStackCloudUnavailableFeature
+from shade.tests.functional import base
 
 
-class TestServices(base.TestCase):
+class TestServices(base.BaseFunctionalTestCase):
 
     service_attributes = ['id', 'name', 'type', 'description']
 
     def setUp(self):
         super(TestServices, self).setUp()
-        self.operator_cloud = operator_cloud(cloud='devstack-admin')
 
         # Generate a random name for services in this test
         self.new_service_name = 'test_' + ''.join(
@@ -64,6 +63,30 @@ class TestServices(base.TestCase):
             name=self.new_service_name + '_create', type='test_type',
             description='this is a test description')
         self.assertIsNotNone(service.get('id'))
+
+    def test_update_service(self):
+        if self.operator_cloud.cloud_config.get_api_version(
+            'identity').startswith('2'):
+            # NOTE(SamYaple): Update service only works with v3 api
+            self.assertRaises(OpenStackCloudUnavailableFeature,
+                              self.operator_cloud.update_service,
+                              'service_id', name='new name')
+        else:
+            service = self.operator_cloud.create_service(
+                name=self.new_service_name + '_create', type='test_type',
+                description='this is a test description', enabled=True)
+            new_service = self.operator_cloud.update_service(
+                service.id,
+                name=self.new_service_name + '_update',
+                description='this is an updated description',
+                enabled=False
+            )
+            self.assertEqual(new_service.name,
+                             self.new_service_name + '_update')
+            self.assertEqual(new_service.description,
+                             'this is an updated description')
+            self.assertFalse(new_service.enabled)
+            self.assertEqual(service.id, new_service.id)
 
     def test_list_services(self):
         service = self.operator_cloud.create_service(

@@ -19,10 +19,6 @@ from shade.tests.unit import base
 
 class TestNetwork(base.TestCase):
 
-    def setUp(self):
-        super(TestNetwork, self).setUp()
-        self.cloud = shade.openstack_cloud(validate=False)
-
     @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
     def test_create_network(self, mock_neutron):
         self.cloud.create_network("netname")
@@ -32,6 +28,20 @@ class TestNetwork(base.TestCase):
                     name='netname',
                     shared=False,
                     admin_state_up=True
+                )
+            )
+        )
+
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_create_network_specific_tenant(self, mock_neutron):
+        self.cloud.create_network("netname", project_id="project_id_value")
+        mock_neutron.create_network.assert_called_with(
+            body=dict(
+                network=dict(
+                    name='netname',
+                    shared=False,
+                    admin_state_up=True,
+                    tenant_id="project_id_value",
                 )
             )
         )
@@ -49,6 +59,59 @@ class TestNetwork(base.TestCase):
                 }
             )
         )
+
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_create_network_provider(self, mock_neutron):
+        provider_opts = {'physical_network': 'mynet',
+                         'network_type': 'vlan',
+                         'segmentation_id': 'vlan1'}
+        self.cloud.create_network("netname", provider=provider_opts)
+        mock_neutron.create_network.assert_called_once_with(
+            body=dict(
+                network={
+                    'name': 'netname',
+                    'shared': False,
+                    'admin_state_up': True,
+                    'provider:physical_network':
+                        provider_opts['physical_network'],
+                    'provider:network_type':
+                        provider_opts['network_type'],
+                    'provider:segmentation_id':
+                        provider_opts['segmentation_id'],
+                }
+            )
+        )
+
+    @mock.patch.object(shade.OpenStackCloud, 'neutron_client')
+    def test_create_network_provider_ignored_value(self, mock_neutron):
+        provider_opts = {'physical_network': 'mynet',
+                         'network_type': 'vlan',
+                         'segmentation_id': 'vlan1',
+                         'should_not_be_passed': 1}
+        self.cloud.create_network("netname", provider=provider_opts)
+        mock_neutron.create_network.assert_called_once_with(
+            body=dict(
+                network={
+                    'name': 'netname',
+                    'shared': False,
+                    'admin_state_up': True,
+                    'provider:physical_network':
+                        provider_opts['physical_network'],
+                    'provider:network_type':
+                        provider_opts['network_type'],
+                    'provider:segmentation_id':
+                        provider_opts['segmentation_id'],
+                }
+            )
+        )
+
+    def test_create_network_provider_wrong_type(self):
+        provider_opts = "invalid"
+        with testtools.ExpectedException(
+            shade.OpenStackCloudException,
+            "Parameter 'provider' must be a dict"
+        ):
+            self.cloud.create_network("netname", provider=provider_opts)
 
     @mock.patch.object(shade.OpenStackCloud, 'get_network')
     @mock.patch.object(shade.OpenStackCloud, 'neutron_client')

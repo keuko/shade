@@ -37,6 +37,11 @@ class UserUpdate(task_manager.Task):
         return client.keystone_client.users.update(**self.args)
 
 
+class UserPasswordUpdate(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.users.update_password(**self.args)
+
+
 class UserGet(task_manager.Task):
     def main(self, client):
         return client.keystone_client.users.get(**self.args)
@@ -80,6 +85,32 @@ class ProjectUpdate(task_manager.Task):
 class FlavorList(task_manager.Task):
     def main(self, client):
         return client.nova_client.flavors.list(**self.args)
+
+
+class FlavorGetExtraSpecs(task_manager.RequestTask):
+    result_key = 'extra_specs'
+
+    def main(self, client):
+        return client._compute_client.get(
+            "/flavors/{id}/os-extra_specs".format(**self.args))
+
+
+class FlavorSetExtraSpecs(task_manager.RequestTask):
+    result_key = 'extra_specs'
+
+    def main(self, client):
+        return client._compute_client.post(
+            "/flavors/{id}/os-extra_specs".format(**self.args),
+            json=self.args['json']
+            )
+
+
+class FlavorUnsetExtraSpecs(task_manager.RequestTask):
+
+    def main(self, client):
+        return client._compute_client.delete(
+            "/flavors/{id}/os-extra_specs/{key}".format(**self.args),
+            )
 
 
 class FlavorCreate(task_manager.Task):
@@ -161,10 +192,16 @@ class KeypairDelete(task_manager.Task):
         return client.nova_client.keypairs.delete(**self.args)
 
 
-class NovaUrlGet(task_manager.Task):
+class NovaListExtensions(task_manager.RequestTask):
+    result_key = 'extensions'
+
     def main(self, client):
-        self.requests = True
-        return client.nova_client.client.get(**self.args)
+        return client._compute_client.get('/extensions')
+
+
+class NovaUrlGet(task_manager.RequestTask):
+    def main(self, client):
+        return client._compute_client.get(**self.args)
 
 
 class NetworkList(task_manager.Task):
@@ -467,6 +504,11 @@ class ObjectMetadata(task_manager.Task):
         return client.swift_client.head_object(**self.args)
 
 
+class ObjectGet(task_manager.Task):
+    def main(self, client):
+        return client.swift_client.get_object(**self.args)
+
+
 class SubnetCreate(task_manager.Task):
     def main(self, client):
         return client.neutron_client.create_subnet(**self.args)
@@ -597,6 +639,11 @@ class ServiceList(task_manager.Task):
         return client.keystone_client.services.list()
 
 
+class ServiceUpdate(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.services.update(**self.args)
+
+
 class ServiceDelete(task_manager.Task):
     def main(self, client):
         return client.keystone_client.services.delete(**self.args)
@@ -677,9 +724,34 @@ class RoleDelete(task_manager.Task):
         return client.keystone_client.roles.delete(**self.args)
 
 
+class RoleAddUser(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.roles.add_user_role(**self.args)
+
+
+class RoleGrantUser(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.roles.grant(**self.args)
+
+
+class RoleRemoveUser(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.roles.remove_user_role(**self.args)
+
+
+class RoleRevokeUser(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.roles.revoke(**self.args)
+
+
 class RoleAssignmentList(task_manager.Task):
     def main(self, client):
         return client.keystone_client.role_assignments.list(**self.args)
+
+
+class RolesForUser(task_manager.Task):
+    def main(self, client):
+        return client.keystone_client.roles.roles_for_user(**self.args)
 
 
 class StackList(task_manager.Task):
@@ -694,4 +766,4 @@ class StackCreate(task_manager.Task):
 
 class StackDelete(task_manager.Task):
     def main(self, client):
-        return client.heat_client.stacks.delete(**self.args)
+        return client.heat_client.stacks.delete(self.args['id'])

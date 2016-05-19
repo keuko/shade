@@ -21,7 +21,10 @@ Tests Keystone services commands.
 
 from mock import patch
 import os_client_config
+from shade import _utils
+from shade import meta
 from shade import OpenStackCloudException
+from shade.exc import OpenStackCloudUnavailableFeature
 from shade import OperatorCloud
 from shade.tests.fakes import FakeService
 from shade.tests.unit import base
@@ -30,13 +33,13 @@ from shade.tests.unit import base
 class CloudServices(base.TestCase):
     mock_services = [
         {'id': 'id1', 'name': 'service1', 'type': 'type1',
-         'service_type': 'type1', 'description': 'desc1'},
+         'service_type': 'type1', 'description': 'desc1', 'enabled': True},
         {'id': 'id2', 'name': 'service2', 'type': 'type2',
-         'service_type': 'type2', 'description': 'desc2'},
+         'service_type': 'type2', 'description': 'desc2', 'enabled': True},
         {'id': 'id3', 'name': 'service3', 'type': 'type2',
-         'service_type': 'type2', 'description': 'desc3'},
+         'service_type': 'type2', 'description': 'desc3', 'enabled': True},
         {'id': 'id4', 'name': 'service4', 'type': 'type3',
-         'service_type': 'type3', 'description': 'desc4'}
+         'service_type': 'type3', 'description': 'desc4', 'enabled': True}
     ]
 
     def setUp(self):
@@ -47,8 +50,12 @@ class CloudServices(base.TestCase):
         self.mock_ks_services = [FakeService(**kwa) for kwa in
                                  self.mock_services]
 
+    @patch.object(_utils, 'normalize_keystone_services')
     @patch.object(OperatorCloud, 'keystone_client')
-    def test_create_service(self, mock_keystone_client):
+    @patch.object(os_client_config.cloud_config.CloudConfig, 'get_api_version')
+    def test_create_service_v2(self, mock_api_version, mock_keystone_client,
+                               mock_norm):
+        mock_api_version.return_value = '2.0'
         kwargs = {
             'name': 'a service',
             'type': 'network',
@@ -58,15 +65,63 @@ class CloudServices(base.TestCase):
         self.client.create_service(**kwargs)
         kwargs['service_type'] = kwargs.pop('type')
         mock_keystone_client.services.create.assert_called_with(**kwargs)
+        self.assertTrue(mock_norm.called)
+
+    @patch.object(_utils, 'normalize_keystone_services')
+    @patch.object(OperatorCloud, 'keystone_client')
+    @patch.object(os_client_config.cloud_config.CloudConfig, 'get_api_version')
+    def test_create_service_v3(self, mock_api_version, mock_keystone_client,
+                               mock_norm):
+        mock_api_version.return_value = '3'
+        kwargs = {
+            'name': 'a v3 service',
+            'type': 'cinderv2',
+            'description': 'This is a test service',
+            'enabled': False
+        }
+
+        self.client.create_service(**kwargs)
+        mock_keystone_client.services.create.assert_called_with(**kwargs)
+        self.assertTrue(mock_norm.called)
+
+    @patch.object(os_client_config.cloud_config.CloudConfig, 'get_api_version')
+    def test_update_service_v2(self, mock_api_version):
+        mock_api_version.return_value = '2.0'
+        # NOTE(SamYaple): Update service only works with v3 api
+        self.assertRaises(OpenStackCloudUnavailableFeature,
+                          self.client.update_service,
+                          'service_id', name='new name')
+
+    @patch.object(_utils, 'normalize_keystone_services')
+    @patch.object(OperatorCloud, 'keystone_client')
+    @patch.object(os_client_config.cloud_config.CloudConfig, 'get_api_version')
+    def test_update_service_v3(self, mock_api_version, mock_keystone_client,
+                               mock_norm):
+        mock_api_version.return_value = '3'
+        kwargs = {
+            'name': 'updated_name',
+            'type': 'updated_type',
+            'service_type': 'updated_type',
+            'description': 'updated_name',
+            'enabled': False
+        }
+
+        service_obj = FakeService(id='id1', **kwargs)
+        mock_keystone_client.services.update.return_value = service_obj
+
+        self.client.update_service('id1', **kwargs)
+        del kwargs['service_type']
+        mock_keystone_client.services.update.assert_called_once_with(
+            service='id1', **kwargs
+        )
+        mock_norm.assert_called_once_with([meta.obj_to_dict(service_obj)])
 
     @patch.object(OperatorCloud, 'keystone_client')
     def test_list_services(self, mock_keystone_client):
         mock_keystone_client.services.list.return_value = \
             self.mock_ks_services
-
         services = self.client.list_services()
         mock_keystone_client.services.list.assert_called_with()
-
         self.assertItemsEqual(self.mock_services, services)
 
     @patch.object(OperatorCloud, 'keystone_client')

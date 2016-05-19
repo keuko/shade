@@ -31,10 +31,27 @@ class FakeEndpoint(object):
         self.adminurl = adminurl
 
 
+class FakeEndpointv3(object):
+    def __init__(self, id, service_id, region, url, interface=None):
+        self.id = id
+        self.service_id = service_id
+        self.region = region
+        self.url = url
+        self.interface = interface
+
+
 class FakeFlavor(object):
-    def __init__(self, id, name):
+    def __init__(self, id, name, ram, extra_specs=None):
         self.id = id
         self.name = name
+        self.ram = ram
+        # Leave it unset if we don't pass it in to test that normalize_ works
+        # but we also have to be able to pass one in to deal with mocks
+        if extra_specs:
+            self.extra_specs = extra_specs
+
+    def get_keys(self):
+        return {}
 
 
 class FakeFloatingIP(object):
@@ -60,18 +77,25 @@ class FakeImage(object):
 
 
 class FakeProject(object):
-    def __init__(self, id):
+    def __init__(self, id, domain_id=None):
         self.id = id
+        self.domain_id = domain_id or 'default'
 
 
 class FakeServer(object):
     def __init__(
             self, id, name, status, addresses=None,
-            accessIPv4='', accessIPv6='', flavor=None, image=None):
+            accessIPv4='', accessIPv6='', private_v4='',
+            private_v6='', public_v4='', public_v6='',
+            flavor=None, image=None, adminPass=None,
+            metadata=None):
         self.id = id
         self.name = name
         self.status = status
-        self.addresses = addresses
+        if not addresses:
+            self.addresses = {}
+        else:
+            self.addresses = addresses
         if not flavor:
             flavor = {}
         self.flavor = flavor
@@ -80,22 +104,32 @@ class FakeServer(object):
         self.image = image
         self.accessIPv4 = accessIPv4
         self.accessIPv6 = accessIPv6
+        self.private_v4 = private_v4
+        self.public_v4 = public_v4
+        self.private_v6 = private_v6
+        self.public_v6 = public_v6
+        self.adminPass = adminPass
+        self.metadata = metadata
 
 
 class FakeService(object):
-    def __init__(self, id, name, type, service_type, description=''):
+    def __init__(self, id, name, type, service_type, description='',
+                 enabled=True):
         self.id = id
         self.name = name
         self.type = type
         self.service_type = service_type
         self.description = description
+        self.enabled = enabled
 
 
 class FakeUser(object):
-    def __init__(self, id, email, name):
+    def __init__(self, id, email, name, domain_id=None):
         self.id = id
         self.email = email
         self.name = name
+        if domain_id is not None:
+            self.domain_id = domain_id
 
 
 class FakeVolume(object):
@@ -192,11 +226,11 @@ class FakeRole(object):
 
 
 class FakeGroup(object):
-    def __init__(self, id, name, description, domain=None):
+    def __init__(self, id, name, description, domain_id=None):
         self.id = id
         self.name = name
         self.description = description
-        self.domain = domain
+        self.domain_id = domain_id or 'default'
 
 
 class FakeHypervisor(object):
@@ -208,6 +242,7 @@ class FakeHypervisor(object):
 class FakeStack(object):
     def __init__(self, id, name, description=None, status='CREATE_COMPLETE'):
         self.id = id
+        self.name = name
         self.stack_name = name
         self.stack_description = description
         self.stack_status = status
