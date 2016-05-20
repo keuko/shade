@@ -1,6 +1,8 @@
 python-shade (1.7.0-2) UNRELEASED; urgency=medium
 
   * Updated standards to v3.9.8, no changes required.
+  * Add reference to /usr/share/common-licenses to address copyright-
+    should-refer-to-common-license-file-for-apache-2 lintian error.
 
  -- Clint Byrum <spamaps@debian.org>  Fri, 20 May 2016 09:48:39 -0700
 
