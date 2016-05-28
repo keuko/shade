@@ -6,5 +6,6 @@ export PYBUILD_NAME=shade
 
 override_dh_auto_test:
 ifeq (,$(filter nocheck, $(DEB_BUILD_OPTIONS)))
+	python3 setup.py testr --slowest
 	python setup.py testr --slowest
 endif
