@@ -2,7 +2,7 @@
 export PYBUILD_NAME=shade
 
 %:
-		dh $@ --with python2 --buildsystem=pybuild
+		dh $@ --with python2 --with python3 --buildsystem=pybuild
 
 override_dh_auto_test:
 ifeq (,$(filter nocheck, $(DEB_BUILD_OPTIONS)))

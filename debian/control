@@ -83,7 +83,7 @@ Description: Client library for operating OpenStack clouds
 
 Package: python3-shade
 Architecture: all
-Depends: ${misc:Depends},${python:Depends}
+Depends: ${misc:Depends},${python3:Depends}
 Description: Client library for operating OpenStack clouds
  Shade is a simple Python client library for operating OpenStack
  clouds. The key word here is simple. Clouds can do many things - but
