@@ -1,4 +1,4 @@
-python-shade (1.7.0-2) UNRELEASED; urgency=medium
+python-shade (1.7.0-2) unstable; urgency=medium
 
   * Updated standards to v3.9.8, no changes required.
   * Add reference to /usr/share/common-licenses to address copyright-
@@ -9,7 +9,7 @@ python-shade (1.7.0-2) UNRELEASED; urgency=medium
     - Replaced bunch with munch in build depends per upstream changes
   * Set DPMT as maintainer, demote me to Uploaders.
 
- -- Clint Byrum <spamaps@debian.org>  Sat, 28 May 2016 08:49:30 -0700
+ -- Clint Byrum <spamaps@debian.org>  Wed, 02 Nov 2016 09:26:17 -0700
 
 python-shade (1.7.0-1) unstable; urgency=medium
 
