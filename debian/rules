@@ -1,0 +1,34 @@
+#!/usr/bin/make -f
+
+export PYBUILD_NAME=shade
+
+%:
+		dh $@ --with python2,python3,sphinxdoc --buildsystem=pybuild
+
+override_dh_auto_test:
+ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
+	echo "===> Running tests"
+	set -e && for i in 2.7 3.5; do \
+		PYMAJOR=`echo $$i | cut -d'.' -f1` ; \
+		echo "===> Testing with python$$i (python$$PYMAJOR)" ; \
+		rm -rf .testrepository ; \
+		testr-python$$PYMAJOR init ; \
+		TEMP_REZ=`mktemp -t` && \
+		PYTHONPATH=$(CURDIR) PYTHON=python$$i testr-python$$PYMAJOR run --subunit 'shade\.tests\.unit\..*[^test_create_server.TestCreateServer.test_create_server_user_data_base64].*' | tee $$TEMP_REZ | subunit2pyunit ; \
+		cat $$TEMP_REZ | subunit-filter -s --no-passthrough | subunit-stats ; \
+		rm -f $$TEMP_REZ ; \
+		testr-python$$PYMAJOR slowest ; \
+	done
+endif
+
+override_dh_clean:
+	dh_clean -O--buildsystem=pybuild
+	rm -rf build
+	rm -rf .testrepository
+	rm -f AUTHORS
+	rm -f ChangeLog
+	rm -rf shade.egg-info
+
+override_dh_sphinxdoc:
+	sphinx-build -b html doc/source debian/python-shade/usr/share/doc/python-os-client-config-doc/html
+	dh_sphinxdoc -O--buildsystem=pybuild

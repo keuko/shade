@@ -1,0 +1,55 @@
+python-shade (1.20.0-1) unstable; urgency=medium
+
+  * New upstream release.
+  * add new build deps for upstream release
+
+ -- Michal Arbet <michal.arbet@ultimum.io>  Mon, 23 Oct 2017 17:34:34 +0100
+
+python-shade (1.12.1-1) UNRELEASED; urgency=medium
+
+  * New upstream release.
+  * add new build deps for upstream release
+
+ -- Clint Byrum <spamaps@debian.org>  Thu, 03 Nov 2016 15:16:24 -0700
+
+python-shade (1.7.0-2) unstable; urgency=medium
+
+  * Updated standards to v3.9.8, no changes required.
+  * Add reference to /usr/share/common-licenses to address copyright-
+    should-refer-to-common-license-file-for-apache-2 lintian error.
+  * Adding python3 support.
+    - Removing erroneous os-cloud-config dependency (shade doesn't
+      relate to TripleO)
+    - Replaced bunch with munch in build depends per upstream changes
+  * Set DPMT as maintainer, demote me to Uploaders.
+
+ -- Clint Byrum <spamaps@debian.org>  Wed, 02 Nov 2016 09:26:17 -0700
+
+python-shade (1.7.0-1) unstable; urgency=medium
+
+  [ Clint Byrum ]
+  * New Upstream release. (Closes: #821197)
+  * Add missing short license name to debian/copyright
+
+  [ Ondřej Nový ]
+  * Fixed VCS URL (https)
+
+  [ Clint Byrum ]
+  * Newer version of os-client-config is required
+
+ -- Clint Byrum <spamaps@debian.org>  Thu, 19 May 2016 06:29:37 -0700
+
+python-shade (1.3.0-1) unstable; urgency=medium
+
+  * New Upstream release.
+  * Fixed SCM to point at git (Closes: #804548)
+  * Respect DEB_BUILD_OPTOINS (Closes: #804550)
+  * Add new build deps to pass test suite in new release.
+
+ -- Clint Byrum <spamaps@debian.org>  Sat, 26 Dec 2015 07:48:24 -0800
+
+python-shade (0.6.1-1) unstable; urgency=low
+
+  * Initial release. Closes: #784710
+
+ -- Clint Byrum <spamaps@debian.org>  Thu, 14 May 2015 15:22:27 -0700

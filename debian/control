@@ -1,0 +1,101 @@
+Source: python-shade
+Section: python
+Priority: extra
+Maintainer: Debian Python Modules Team <python-modules-team@lists.alioth.debian.org>
+Uploaders: Clint Byrum <spamaps@debian.org>
+Build-Depends: debhelper (>=10),
+    dh-python,
+    python-all,
+    subunit,
+    python-concurrent.futures (>= 3.0),
+    python-coverage (>= 4.0),
+    python-fixtures (>= 3.0),
+    python-pbr,
+    python-sphinx,
+    python-reno,
+    python-oslosphinx,
+    python-testtools,
+    python-testrepository,
+    python-dogpile.cache,
+    python-os-client-config (>=1.22.0),
+    python-mock,
+    python-jmespath,
+    python-requests-mock,
+    python-testscenarios,
+    python-keystoneclient (>=3.8.0),
+    python-cinderclient (>=1.9.0),
+    python-neutronclient (>=5.1.0),
+    python-ironicclient (>=1.11.0),
+    python-designateclient (>=1.5.0),
+    python-munch,
+    python-decorator (>=3.4.0),
+    python-keystoneauth1 (>=2.18.0),
+    python-netifaces (>=0.10.4),
+    python-novaclient (>=6.0.0),
+    python-ipaddress,
+    python-jsonpatch,
+    python-six,
+    python-requestsexceptions (>= 1.1.2),
+    python3-all,
+    pytho3-coverage (>= 4.0),
+    python3-fixtures (>= 3.0),
+    python3-pbr,
+    python3-sphinx,
+    python3-reno,
+    python3-oslosphinx,
+    python3-testtools,
+    python3-testrepository,
+    python3-dogpile.cache,
+    python3-os-client-config (>=1.22.0),
+    python3-mock,
+    python3-jmespath,
+    python3-requests-mock,
+    python3-testscenarios,
+    python3-keystoneclient (>=3.8.0),
+    python3-cinderclient (>=1.9.0),
+    python3-neutronclient (>=5.1.0),
+    python3-ironicclient (>=1.11.0),
+    python3-designateclient (>=1.5.0),
+    python3-munch,
+    python3-decorator (>=3.4.0),
+    python3-keystoneauth1 (>=2.18.0),
+    python3-netifaces (>=0.10.4),
+    python3-novaclient (>=6.0.0),
+    python3-jsonpatch,
+    python3-six,
+    python3-requestsexceptions (>=1.1.2),
+Standards-Version: 3.9.8
+Homepage: https://pypi.python.org/pypi/shade
+Vcs-Git: https://anonscm.debian.org/git/python-modules/packages/python-shade.git
+Vcs-Browser: https://anonscm.debian.org/cgit/python-modules/packages/python-shade.git
+X-Python-Version: >= 2.7
+
+Package: python-shade
+Architecture: all
+Depends: ${misc:Depends},${python:Depends}
+Description: Client library for operating OpenStack clouds
+ Shade is a simple Python client library for operating OpenStack
+ clouds. The key word here is simple. Clouds can do many things - but
+ there are probably only about 10 of them that most people care about
+ with any regularity. If you want to do complicated things, you should
+ probably use the lower level client libraries - or even the REST API
+ directly. However, if what you want is to be able to write an application
+ that talks to clouds no matter what choices the deployer has made then
+ shade is for you.
+ .
+ This package installs the library for Python 2.
+
+Package: python3-shade
+Architecture: all
+Depends: ${misc:Depends},${python3:Depends}
+Description: Client library for operating OpenStack clouds
+ Shade is a simple Python client library for operating OpenStack
+ clouds. The key word here is simple. Clouds can do many things - but
+ there are probably only about 10 of them that most people care about
+ with any regularity. If you want to do complicated things, you should
+ probably use the lower level client libraries - or even the REST API
+ directly. However, if what you want is to be able to write an application
+ that talks to clouds no matter what choices the deployer has made then
+ shade is for you.
+ .
+ This package installs the library for Python 3.
